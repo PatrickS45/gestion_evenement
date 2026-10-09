@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | 1.0 — 9 octobre 2026 |
-| **Auteur** | [Nom de l'éditeur] — auto-entrepreneur, SIRET [à compléter] |
+| **Auteur** | [Nom de l'éditeur] — auto-entrepreneur, SIRET 798 419 248 00025 |
 | **Statut** | Document de référence pour le développement de la version 1 |
 | **Premier client visé** | Salon professionnel, mars 2027, environ 1 100 participants sur 2 jours |
 
