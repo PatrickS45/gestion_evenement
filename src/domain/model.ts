@@ -26,8 +26,23 @@ export interface GaugeThresholds {
   critical: number;
 }
 
+export interface Organization {
+  id: string;
+  name: string;
+  createdAt: Iso;
+}
+
+export interface User {
+  id: string;
+  /** En minuscules ; sert d'identifiant de connexion (F-01). */
+  email: string;
+  name: string;
+}
+
 export interface EventInfo {
   id: string;
+  /** Organisation propriétaire ; seuls ses membres accèdent à l'événement (NF-24). */
+  orgId: string;
   name: string;
   /** Jour de début, AAAA-MM-JJ (heure de Paris). */
   startDate: string;

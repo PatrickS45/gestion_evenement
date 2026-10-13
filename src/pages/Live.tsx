@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { errorMessage, useAgent, useNotify, useNow, useStore } from '../app/context';
+import { errorMessage, useNotify, useNow, useSession, useStore } from '../app/context';
+import { can } from '../domain/access';
 import type { EventSnapshot } from '../data/store';
 import { liveView } from '../domain/attendance';
 import { GAUGE_LEVELS } from '../domain/gauge';
@@ -12,7 +13,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`;
 export function Live({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
   const notify = useNotify();
-  const { agent } = useAgent();
+  const { stationId } = useSession();
   const now = useNow();
   const ref = useRef<HTMLElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -29,9 +30,9 @@ export function Live({ snapshot }: { snapshot: EventSnapshot }) {
   }, []);
 
   const closeDay = async () => {
-    if (!agent || !confirm(`Enregistrer la sortie des ${plural(live.present, 'personne')} encore comptées dans la salle ?`)) return;
+    if (!confirm(`Enregistrer la sortie des ${plural(live.present, 'personne')} encore comptées dans la salle ?`)) return;
     try {
-      const n = await store.closeDay(snapshot.event.id, agent);
+      const n = await store.closeDay(snapshot.event.id, stationId);
       notify(`Journée clôturée : ${plural(n, 'sortie')} enregistrée${n > 1 ? 's' : ''}`);
     } catch (err) { notify(errorMessage(err), 'danger'); }
   };
@@ -153,14 +154,14 @@ export function Live({ snapshot }: { snapshot: EventSnapshot }) {
           )}
         </section>
 
-        <section className="card stack" aria-labelledby="close-title">
+        {can(snapshot.role, 'day.close') && <section className="card stack" aria-labelledby="close-title">
           <h2 id="close-title" style={{ marginBottom: 0 }}>Fin de journée</h2>
           <p className="muted">
             Les personnes qui n'ont pas scanné leur sortie restent comptées comme présentes. En fin de journée,
             enregistrez leur sortie pour repartir de zéro le lendemain.
           </p>
           <div><button className="btn btn-secondary" onClick={closeDay} disabled={live.present === 0}>Clôturer la journée ({plural(live.present, 'présent')})</button></div>
-        </section>
+        </section>}
       </>}
     </section>
   );

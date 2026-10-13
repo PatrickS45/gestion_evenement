@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { errorMessage, useNotify, useStore } from '../app/context';
 import { navigate, publicUrl } from '../app/router';
 import type { EventSnapshot } from '../data/store';
+import { can } from '../domain/access';
 import { MAX_TYPES, nextTypeColor, TYPE_PALETTE } from '../domain/colors';
 import { newId } from '../domain/ids';
 import type { ParticipantType } from '../domain/model';
@@ -139,7 +140,7 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
         <h2 id="manage-title" style={{ marginBottom: 0 }}>Gestion</h2>
         <div className="row">
           <button className="btn btn-secondary" onClick={duplicate}>Dupliquer pour une prochaine édition</button>
-          <button className="btn btn-danger" onClick={remove}>Supprimer l'événement</button>
+          {can(snapshot.role, 'event.delete') && <button className="btn btn-danger" onClick={remove}>Supprimer l'événement</button>}
         </div>
       </section>
     </div>

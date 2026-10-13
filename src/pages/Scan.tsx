@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { errorMessage, useAgent, useNotify, useStore } from '../app/context';
+import { errorMessage, useNotify, useSession, useStore } from '../app/context';
 import type { EventSnapshot, ScanResult } from '../data/store';
 import { fullName, type Direction, type ScanMethod } from '../domain/model';
 import { decisionMessage } from '../domain/scan';
@@ -25,7 +25,7 @@ function readMode(): Direction {
 export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
   const notify = useNotify();
-  const { agent } = useAgent();
+  const { stationId } = useSession();
   const { event, participants } = snapshot;
   const [mode, setModeState] = useState<Direction>(readMode);
   const [camera, setCamera] = useState(false);
@@ -48,7 +48,7 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
   };
 
   const handle = async (token: string, method: ScanMethod) => {
-    if (!agent || !token.trim() || busy.current) return;
+    if (!token.trim() || busy.current) return;
     if (method === 'camera') {
       const now = Date.now();
       if (token === lastCamera.current.code && now - lastCamera.current.at < SAME_CODE_IGNORE_MS) return;
@@ -56,7 +56,7 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
     }
     busy.current = true;
     try {
-      const r = await store.scan(event.id, token, mode, method, agent);
+      const r = await store.scan(event.id, token, mode, method, stationId);
       setResult(r);
       navigator.vibrate?.(r.decision.result === 'accepted' ? 80 : [60, 60, 60]);
       if (r.decision.result === 'accepted' && r.decision.direction === 'in' && event.capacity > 0 && present + 1 > event.capacity) {
