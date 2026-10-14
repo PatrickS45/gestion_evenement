@@ -6,6 +6,12 @@ import { can, type Action, type Role } from '../domain/access';
 import { compareNames, type EventInfo, type Organization, type Participant, type Passage, type Refusal, type ScanMethod, type User } from '../domain/model';
 import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncBatch, type SyncResult, type SyncStatus } from '../domain/offline';
 import { applyScan, decideScan } from '../domain/scan';
+import {
+  defaultPrivacy, EXPORT_KINDS, EXPORT_LABELS, normalizePrivacy, privacyComplete, purgeDay, retentionState,
+  type AuditAction, type AuditEntry, type ExportKind, type PrivacyPolicy,
+} from '../domain/privacy';
+import { anonymousReport, type EventReport, type ReportReason } from '../domain/report';
+import { parisDay } from '../domain/time';
 import { DEFAULT_TYPES } from '../domain/colors';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
 import { newId, newToken } from '../domain/ids';
@@ -13,7 +19,7 @@ import { hashPassword, PASSWORD_MIN_LENGTH, verifyPassword } from './password';
 import {
   StoreError,
   type AccessPage, type EventPatch, type EventSnapshot, type EventStore, type Member, type NewEvent,
-  type NewParticipant, type ParticipantPatch, type RegistrationForm, type RegistrationInfo, type ScanResult,
+  type NewParticipant, type ParticipantPatch, type ParticipantRecord, type PublicPrivacy, type RegistrationForm, type RegistrationInfo, type ScanResult,
   type Session, type SignUpInput,
 } from './store';
 
@@ -29,13 +35,24 @@ interface Db {
   participants: Record<string, Participant>;
   passages: Passage[];
   refusals: Refusal[];
+  /** Politique par défaut de chaque organisation (NF-32). */
+  orgPrivacy: Record<string, PrivacyPolicy>;
+  /** Bilans anonymes conservés (F-77). */
+  reports: (EventReport & { orgId: string })[];
+  /** Traces des actions sur les données personnelles (RG-09). */
+  audit: AuditEntry[];
 }
 
 const EMPTY: Db = {
   version: 2, users: {}, organizations: {}, memberships: [], events: {}, participants: {}, passages: [], refusals: [],
+  orgPrivacy: {}, reports: [], audit: [],
 };
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const normEmail = (email: string) => email.trim().toLowerCase();
+
+function publicPrivacy(e: EventInfo): PublicPrivacy {
+  return { ...e.privacy, purgeDay: purgeDay(e) };
+}
 
 /** Limitation des tentatives de connexion (NF-22) : au plus 5 échecs par minute et par poste. */
 const MAX_FAILURES = 5;
@@ -99,7 +116,14 @@ export class LocalStore implements EventStore {
   private read(): Db {
     const raw = this.storage.get(KEY);
     if (!raw) return structuredClone(EMPTY);
-    try { return { ...structuredClone(EMPTY), ...JSON.parse(raw) as Db, version: 2 }; }
+    try {
+      const db = { ...structuredClone(EMPTY), ...JSON.parse(raw) as Db, version: 2 as const };
+      for (const e of Object.values(db.events)) {
+        e.privacy = normalizePrivacy(e.privacy, defaultPrivacy(db.organizations[e.orgId]?.name ?? ''));
+        e.purgedAt ??= null;
+      }
+      return db;
+    }
     catch { return structuredClone(EMPTY); }
   }
 
@@ -339,24 +363,31 @@ export class LocalStore implements EventStore {
   }
 
   async createEvent(orgId: string, input: NewEvent) {
-    const event: EventInfo = {
-      id: newId(), orgId, name: input.name.trim().slice(0, 200), startDate: input.startDate, endDate: input.endDate,
-      venue: (input.venue ?? '').trim(), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
-      types: DEFAULT_TYPES, registrationOpen: false, createdAt: this.nowIso(),
-    };
-    if (!event.name) throw new StoreError('invalid', 'Le nom de l\'événement est obligatoire');
-    if (event.endDate < event.startDate) throw new StoreError('invalid', 'La date de fin précède la date de début');
-    await this.transaction([], (db) => {
+    const name = input.name.trim().slice(0, 200);
+    if (!name) throw new StoreError('invalid', 'Le nom de l\'événement est obligatoire');
+    if (input.endDate < input.startDate) throw new StoreError('invalid', 'La date de fin précède la date de début');
+    return this.transaction([], (db) => {
       this.requireRole(db, orgId, 'event.create');
+      const event: EventInfo = {
+        id: newId(), orgId, name, startDate: input.startDate, endDate: input.endDate,
+        venue: (input.venue ?? '').trim(), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
+        types: DEFAULT_TYPES, registrationOpen: false, createdAt: this.nowIso(),
+        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null,
+      };
       db.events[event.id] = event;
+      return event;
     });
-    return event;
   }
 
   async updateEvent(id: string, patch: EventPatch) {
     return this.transaction([id], (db) => {
-      const event = { ...this.requireEvent(db, id, 'event.edit'), ...patch };
+      const current = this.requireEvent(db, id, 'event.edit');
+      const event: EventInfo = { ...current, ...patch, privacy: patch.privacy ? normalizePrivacy(patch.privacy, current.privacy) : current.privacy };
       if (!Number.isInteger(event.capacity) || event.capacity < 0) throw new StoreError('invalid', 'Jauge invalide');
+      if (event.registrationOpen && current.purgedAt) throw new StoreError('closed', 'Les données de cet événement ont été purgées');
+      if (event.registrationOpen && !privacyComplete(event.privacy)) {
+        throw new StoreError('invalid', 'Renseignez le responsable du traitement et le contact pour les données personnelles avant d\'ouvrir les inscriptions');
+      }
       db.events[id] = event;
       return event;
     });
@@ -367,12 +398,15 @@ export class LocalStore implements EventStore {
     const created = await this.createEvent(source.orgId, {
       name, startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity,
     });
-    return this.updateEvent(created.id, { types: source.types, thresholds: source.thresholds });
+    return this.updateEvent(created.id, { types: source.types, thresholds: source.thresholds, privacy: source.privacy });
   }
 
   async deleteEvent(id: string) {
     await this.transaction([id], (db) => {
-      this.requireEvent(db, id, 'event.delete');
+      const event = this.requireEvent(db, id, 'event.delete');
+      // Bilan anonyme enregistré avant toute suppression de données (F-77)
+      const count = event.purgedAt ? 0 : this.keepReport(db, event, 'deletion').registered;
+      this.audit(db, event, 'event.delete', count);
       delete db.events[id];
       for (const p of Object.values(db.participants)) if (p.eventId === id) delete db.participants[p.id];
       db.passages = db.passages.filter((p) => p.eventId !== id);
@@ -385,8 +419,9 @@ export class LocalStore implements EventStore {
   async addParticipants(eventId: string, list: NewParticipant[]) {
     return this.transaction([eventId], (db) => {
       const event = this.requireEvent(db, eventId, 'participants.manage');
+      this.requireNotPurged(event);
       const typeIds = new Set(event.types.map((t) => t.id));
-      return list.map((input) => {
+      const added = list.map((input) => {
         if (!input.firstName.trim() && !input.lastName.trim()) throw new StoreError('invalid', 'Nom manquant');
         if (input.email && !EMAIL.test(input.email.trim())) throw new StoreError('invalid', `Email invalide : ${input.email}`);
         if (this.emailTaken(db, eventId, input.email)) throw new StoreError('duplicate', `${input.email} est déjà inscrit`);
@@ -394,6 +429,9 @@ export class LocalStore implements EventStore {
         db.participants[p.id] = p;
         return p;
       });
+      const imported = added.filter((p) => p.source === 'import').length;
+      if (imported) this.audit(db, event, 'import', imported); // RG-09
+      return added;
     });
   }
 
@@ -415,9 +453,10 @@ export class LocalStore implements EventStore {
   async deleteParticipant(id: string) {
     const eventId = this.requireParticipant(this.read(), id, 'participants.manage').eventId;
     await this.transaction([eventId], (db) => {
-      this.requireParticipant(db, id, 'participants.manage');
+      const p = this.requireParticipant(db, id, 'participants.manage');
+      this.audit(db, db.events[p.eventId]!, 'participant.delete', 1); // NF-34
       delete db.participants[id];
-      db.passages = db.passages.filter((p) => p.participantId !== id); // RG-08
+      db.passages = db.passages.filter((x) => x.participantId !== id); // RG-08
     });
   }
 
@@ -434,7 +473,7 @@ export class LocalStore implements EventStore {
 
   async scan(eventId: string, token: string, direction: 'in' | 'out', method: ScanMethod, stationId: string): Promise<ScanResult> {
     return this.transaction([eventId], (db) => {
-      this.requireEvent(db, eventId, 'scan');
+      this.requireNotPurged(this.requireEvent(db, eventId, 'scan'));
       const agent = this.requireUser(db);
       const at = this.nowIso();
       const participant = Object.values(db.participants).find((p) => p.eventId === eventId && p.token === token.trim());
@@ -459,7 +498,7 @@ export class LocalStore implements EventStore {
 
   async closeDay(eventId: string, stationId: string) {
     return this.transaction([eventId], (db) => {
-      this.requireEvent(db, eventId, 'day.close');
+      this.requireNotPurged(this.requireEvent(db, eventId, 'day.close'));
       const agent = this.requireUser(db);
       const at = this.nowIso();
       let count = 0;
@@ -480,7 +519,7 @@ export class LocalStore implements EventStore {
   async syncOffline(eventId: string, batch: SyncBatch): Promise<SyncResult> {
     if (batch.passages.length + batch.refusals.length > SYNC_MAX) throw new StoreError('invalid', 'Lot trop volumineux');
     return this.transaction([eventId], (db) => {
-      this.requireEvent(db, eventId, 'scan');
+      this.requireNotPurged(this.requireEvent(db, eventId, 'scan'));
       const agent = this.requireUser(db);
       const nowMs = this.now().getTime();
       const base = { eventId, agentId: agent.id, agentName: agent.name, stationId: String(batch.stationId ?? '').slice(0, 60) };
@@ -530,7 +569,7 @@ export class LocalStore implements EventStore {
 
   async getRegistrationInfo(eventId: string): Promise<RegistrationInfo | null> {
     const e = this.read().events[eventId];
-    return e ? { eventName: e.name, types: e.types, open: e.registrationOpen } : null;
+    return e ? { eventName: e.name, types: e.types, open: e.registrationOpen && !e.purgedAt, privacy: publicPrivacy(e) } : null;
   }
 
   async register(eventId: string, form: RegistrationForm) {
@@ -539,7 +578,7 @@ export class LocalStore implements EventStore {
     if (!EMAIL.test(form.email.trim())) throw new StoreError('invalid', 'Adresse email invalide');
     return this.transaction([eventId], (db) => {
       const event = db.events[eventId];
-      if (!event || !event.registrationOpen) throw new StoreError('closed', 'Les inscriptions sont fermées');
+      if (!event || !event.registrationOpen || event.purgedAt) throw new StoreError('closed', 'Les inscriptions sont fermées');
       if (!event.types.some((t) => t.id === form.typeId)) throw new StoreError('invalid', 'Profil invalide');
       if (this.emailTaken(db, eventId, form.email)) throw new StoreError('duplicate', 'Cette adresse email est déjà inscrite');
       const p = this.buildParticipant(eventId, { ...form, source: 'form', consentAt: this.nowIso() });
@@ -557,7 +596,124 @@ export class LocalStore implements EventStore {
       eventName: e.name, startDate: e.startDate, endDate: e.endDate, venue: e.venue,
       firstName: p.firstName, lastName: p.lastName, company: p.company,
       type: e.types.find((t) => t.id === p.typeId) ?? null, token: p.token, entryCount: p.entryCount,
+      privacy: publicPrivacy(e),
     };
+  }
+
+  // ── Protection des données (NF-32 à NF-34, F-77, RG-09) ────────────
+
+  private orgPrivacyOf(db: Db, orgId: string): PrivacyPolicy {
+    return db.orgPrivacy[orgId] ?? defaultPrivacy(db.organizations[orgId]?.name ?? '');
+  }
+
+  private requireNotPurged(event: EventInfo) {
+    if (event.purgedAt) throw new StoreError('closed', 'Les données de cet événement ont été purgées');
+  }
+
+  /** Trace d'une action sur des données personnelles ; sans utilisateur connecté : purge automatique. */
+  private audit(db: Db, event: EventInfo, action: AuditAction, count: number, detail = '') {
+    const user = this.sessionUser(db);
+    db.audit.push({
+      id: newId(), orgId: event.orgId, eventId: event.id, eventName: event.name,
+      actorId: user?.id ?? '', actorName: user?.name ?? 'Purge automatique', action, count, detail, at: this.nowIso(),
+    });
+  }
+
+  private keepReport(db: Db, event: EventInfo, reason: ReportReason): EventReport {
+    const report = anonymousReport(
+      event,
+      Object.values(db.participants).filter((p) => p.eventId === event.id),
+      db.passages.filter((p) => p.eventId === event.id),
+      db.refusals.filter((r) => r.eventId === event.id),
+      this.nowIso(), reason,
+    );
+    db.reports.push({ ...report, orgId: event.orgId });
+    return report;
+  }
+
+  private purge(db: Db, event: EventInfo, automatic: boolean): EventReport {
+    const report = this.keepReport(db, event, 'purge');
+    for (const p of Object.values(db.participants)) if (p.eventId === event.id) delete db.participants[p.id];
+    db.passages = db.passages.filter((p) => p.eventId !== event.id);
+    db.refusals = db.refusals.filter((r) => r.eventId !== event.id);
+    db.events[event.id] = { ...event, purgedAt: report.generatedAt, registrationOpen: false };
+    if (automatic) {
+      db.audit.push({
+        id: newId(), orgId: event.orgId, eventId: event.id, eventName: event.name, actorId: '', actorName: 'Purge automatique',
+        action: 'purge', count: report.registered, detail: 'Échéance de conservation', at: this.nowIso(),
+      });
+    } else {
+      this.audit(db, event, 'purge', report.registered, 'Purge demandée');
+    }
+    return report;
+  }
+
+  async purgeEvent(eventId: string) {
+    return this.transaction([eventId], (db) => {
+      const event = this.requireEvent(db, eventId, 'event.delete');
+      this.requireNotPurged(event);
+      return this.purge(db, event, false);
+    });
+  }
+
+  /** Purge automatique des événements arrivés à échéance (NF-33) ; lancée au démarrage de l'application. */
+  async purgeDue(today = parisDay(this.now())): Promise<number> {
+    const due = Object.values(this.read().events).filter((e) => retentionState(e, today) === 'due').map((e) => e.id);
+    if (!due.length) return 0;
+    await this.transaction(due, (db) => {
+      for (const id of due) if (db.events[id] && !db.events[id]!.purgedAt) this.purge(db, db.events[id]!, true);
+    });
+    return due.length;
+  }
+
+  async getOrgPrivacy(orgId: string) {
+    const db = this.read();
+    this.requireRole(db, orgId, 'scan');
+    return this.orgPrivacyOf(db, orgId);
+  }
+
+  async setOrgPrivacy(orgId: string, privacy: Partial<PrivacyPolicy>) {
+    return this.transaction([], (db) => {
+      this.requireRole(db, orgId, 'event.edit');
+      return (db.orgPrivacy[orgId] = normalizePrivacy(privacy, this.orgPrivacyOf(db, orgId)));
+    });
+  }
+
+  async listReports(orgId: string): Promise<EventReport[]> {
+    const db = this.read();
+    this.requireRole(db, orgId, 'stats.export');
+    return db.reports.filter((r) => r.orgId === orgId).map(({ orgId: _o, ...r }) => r).reverse();
+  }
+
+  async listAudit(orgId: string): Promise<AuditEntry[]> {
+    const db = this.read();
+    this.requireRole(db, orgId, 'stats.export');
+    return db.audit.filter((a) => a.orgId === orgId).reverse();
+  }
+
+  async logExport(eventId: string, kind: ExportKind, count: number) {
+    if (!EXPORT_KINDS.includes(kind)) throw new StoreError('invalid', 'Export inconnu');
+    await this.transaction([], (db) => {
+      this.audit(db, this.requireEvent(db, eventId, 'stats.export'), 'export', Math.max(0, Math.floor(count)), EXPORT_LABELS[kind]);
+    });
+  }
+
+  async exportParticipant(id: string): Promise<ParticipantRecord> {
+    const eventId = this.requireParticipant(this.read(), id, 'participants.manage').eventId;
+    return this.transaction([], (db) => {
+      const participant = this.requireParticipant(db, id, 'participants.manage');
+      const event = db.events[eventId]!;
+      this.audit(db, event, 'participant.export', 1); // NF-34
+      return {
+        eventName: event.name,
+        participant,
+        passages: db.passages.filter((p) => p.participantId === id).sort((a, b) => a.at.localeCompare(b.at))
+          .map(({ direction, at, stationId, method, origin, offlineDuplicate }) => ({ direction, at, stationId, method, origin, offlineDuplicate })),
+        refusals: db.refusals.filter((r) => r.participantId === id).sort((a, b) => a.at.localeCompare(b.at))
+          .map(({ reason, at, stationId }) => ({ reason, at, stationId })),
+        exportedAt: this.nowIso(),
+      };
+    });
   }
 
   // ── Temps réel ─────────────────────────────────────────────────────

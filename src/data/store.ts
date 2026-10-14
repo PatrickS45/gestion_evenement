@@ -6,6 +6,8 @@ import type {
   Direction, EventInfo, Participant, ParticipantSource, ParticipantType, Passage, Refusal, ScanMethod, User,
 } from '../domain/model';
 import type { SyncBatch, SyncResult } from '../domain/offline';
+import type { AuditEntry, ExportKind, PrivacyPolicy } from '../domain/privacy';
+import type { EventReport } from '../domain/report';
 import type { ScanDecision } from '../domain/scan';
 
 export type { OfflinePassage, OfflineRefusal, SyncBatch, SyncResult, SyncStatus } from '../domain/offline';
@@ -46,7 +48,23 @@ export interface NewEvent {
   capacity?: number;
 }
 
-export type EventPatch = Partial<Omit<EventInfo, 'id' | 'orgId' | 'createdAt'>>;
+export type EventPatch = Partial<Omit<EventInfo, 'id' | 'orgId' | 'createdAt' | 'privacy' | 'purgedAt'>> & {
+  privacy?: Partial<PrivacyPolicy>;
+};
+
+/** Politique de confidentialité montrée au public, avec la date de purge qui en découle (NF-32). */
+export interface PublicPrivacy extends PrivacyPolicy {
+  purgeDay: string;
+}
+
+/** Données d'une personne, remises à sa demande (NF-34) : tout ce qui la concerne, rien sur les agents. */
+export interface ParticipantRecord {
+  eventName: string;
+  participant: Participant;
+  passages: Pick<Passage, 'direction' | 'at' | 'stationId' | 'method' | 'origin' | 'offlineDuplicate'>[];
+  refusals: Pick<Refusal, 'reason' | 'at' | 'stationId'>[];
+  exportedAt: string;
+}
 
 export interface NewParticipant {
   firstName: string;
@@ -81,6 +99,7 @@ export interface RegistrationInfo {
   eventName: string;
   types: ParticipantType[];
   open: boolean;
+  privacy: PublicPrivacy;
 }
 
 /** Ce que voit un participant sur sa page d'accès (F-40) : ses seules données. */
@@ -95,6 +114,7 @@ export interface AccessPage {
   type: ParticipantType | null;
   token: string;
   entryCount: number;
+  privacy: PublicPrivacy;
 }
 
 export interface RegistrationForm {
@@ -162,6 +182,21 @@ export interface EventStore {
   getRegistrationInfo(eventId: string): Promise<RegistrationInfo | null>;
   register(eventId: string, form: RegistrationForm): Promise<{ token: string }>;
   getAccessPage(token: string): Promise<AccessPage | null>;
+
+  // Protection des données (NF-32 à NF-34, F-77, RG-09)
+  /** Politique appliquée aux nouveaux événements de l'organisation. */
+  getOrgPrivacy(orgId: string): Promise<PrivacyPolicy>;
+  setOrgPrivacy(orgId: string, privacy: Partial<PrivacyPolicy>): Promise<PrivacyPolicy>;
+  /** Purge immédiate des données personnelles (propriétaire) ; le bilan anonyme est enregistré avant. */
+  purgeEvent(eventId: string): Promise<EventReport>;
+  /** Bilans anonymes conservés, y compris ceux des événements purgés ou supprimés. */
+  listReports(orgId: string): Promise<EventReport[]>;
+  /** Traces des actions sur les données personnelles, de la plus récente à la plus ancienne. */
+  listAudit(orgId: string): Promise<AuditEntry[]>;
+  /** Trace un export produit sur le poste (le fichier ne passe pas par le serveur). */
+  logExport(eventId: string, kind: ExportKind, count: number): Promise<void>;
+  /** Données d'une personne, à sa demande ; l'export est tracé. */
+  exportParticipant(id: string): Promise<ParticipantRecord>;
 
   /**
    * Suivi en temps réel d'un événement ; appelle `listener` une fois chargé, puis à chaque changement,

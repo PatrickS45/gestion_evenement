@@ -8,6 +8,7 @@ import { applyScan, decideScan } from '../domain/scan';
 import { newRecordId } from '../domain/ids';
 import { SYNC_MAX, type OfflinePassage, type OfflineRefusal } from '../domain/offline';
 import type { Direction, Participant, Passage, ScanMethod, User } from '../domain/model';
+import type { ExportKind, PrivacyPolicy } from '../domain/privacy';
 import { queueLock } from './localStore';
 import {
   StoreError,
@@ -447,6 +448,13 @@ export class StationStore implements EventStore {
   getRegistrationInfo(eventId: string) { return this.inner.getRegistrationInfo(eventId); }
   register(eventId: string, form: RegistrationForm) { return this.inner.register(eventId, form); }
   getAccessPage(token: string) { return this.inner.getAccessPage(token); }
+  getOrgPrivacy(orgId: string) { return this.inner.getOrgPrivacy(orgId); }
+  setOrgPrivacy(orgId: string, privacy: Partial<PrivacyPolicy>) { return this.inner.setOrgPrivacy(orgId, privacy); }
+  async purgeEvent(eventId: string) { const r = await this.inner.purgeEvent(eventId); await this.forgetCopy(eventId); return r; }
+  listReports(orgId: string) { return this.inner.listReports(orgId); }
+  listAudit(orgId: string) { return this.inner.listAudit(orgId); }
+  logExport(eventId: string, kind: ExportKind, count: number) { return this.inner.logExport(eventId, kind, count); }
+  exportParticipant(id: string) { return this.inner.exportParticipant(id); }
 
   /** Arrête les essais de reconnexion (tests). */
   dispose() { clearInterval(this.probeTimer); for (const t of this.saveTimers.values()) clearTimeout(t); }
@@ -457,6 +465,13 @@ class Watch {
   closed = false;
   private stop: (() => void) | null = null;
   constructor(readonly listener: (s: EventSnapshot | null) => void, private open: () => () => void) {}
-  resubscribe() { if (this.closed) return; this.stop?.(); this.stop = this.open(); }
+  /** Le nouvel abonnement est ouvert avant de fermer l'ancien : sans aucun sujet suivi, même un instant,
+   *  le client PocketBase coupe sa connexion au temps réel. */
+  resubscribe() {
+    if (this.closed) return;
+    const previous = this.stop;
+    this.stop = this.open();
+    previous?.();
+  }
   close() { this.closed = true; this.stop?.(); }
 }

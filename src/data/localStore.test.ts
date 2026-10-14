@@ -33,4 +33,19 @@ describe('LocalStore — spécificités', () => {
     const session = await store.signUp({ name: 'A', email: 'a@x.fr', password: 'motdepasse-solide', organization: 'Org' });
     expect((await store.listEvents(session.memberships[0]!.orgId)).map((e) => e.name)).toEqual(['Ancien']);
   });
+
+  it("purge automatique à l'échéance de conservation, au démarrage de l'application (NF-33)", async () => {
+    let now = new Date('2027-03-01T10:00:00Z');
+    const store = new LocalStore(memoryKeyValue(), null, queueLock(), memoryKeyValue(), () => now);
+    const orgId = (await store.signUp({ name: 'A', email: 'a@x.fr', password: 'motdepasse-solide', organization: 'Org' })).memberships[0]!.orgId;
+    const event = await store.createEvent(orgId, { name: 'Salon', startDate: '2027-03-11', endDate: '2027-03-12' });
+    await store.addParticipants(event.id, [{ firstName: 'Léa', lastName: 'Petit', email: 'lea@x.fr', typeId: 'magasin', source: 'manual' }]);
+    now = new Date('2027-06-11T10:00:00Z');
+    expect(await store.purgeDue()).toBe(0);
+    now = new Date('2027-06-12T10:00:00Z');
+    expect(await store.purgeDue()).toBe(1);
+    expect((await store.listEvents(orgId))[0]!.purgedAt).toBe('2027-06-12T10:00:00.000Z');
+    expect((await store.listAudit(orgId))[0]).toMatchObject({ action: 'purge', actorName: 'Purge automatique' });
+    expect(await store.purgeDue()).toBe(0);
+  });
 });

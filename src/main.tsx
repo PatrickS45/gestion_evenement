@@ -12,9 +12,10 @@ import './styles.css';
 // continue de scanner en cas de coupure (copie chiffrée, file d'envoi) ; sans, elles restent dans
 // le navigateur (démonstration sur un seul appareil).
 const serverUrl = import.meta.env.VITE_POCKETBASE_URL as string | undefined;
-const store = serverUrl
-  ? new StationStore(new PocketStore(serverUrl, browserSession()), new Vault(indexedDbBackend()))
-  : createBrowserStore();
+const local = serverUrl ? null : createBrowserStore();
+const store = local ?? new StationStore(new PocketStore(serverUrl!, browserSession()), new Vault(indexedDbBackend()));
+// Sans serveur, la purge à l'échéance de conservation (NF-33) a lieu au démarrage ; sinon, le serveur la fait chaque nuit
+void local?.purgeDue();
 
 // Application disponible sans réseau ; en développement, le rechargement de Vite suffit
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {

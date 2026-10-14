@@ -4,7 +4,7 @@ import { publicUrl } from '../app/router';
 import type { EventSnapshot, NewParticipant } from '../data/store';
 import { fullName, type Participant } from '../domain/model';
 import { previewImport, type ImportPreview } from '../domain/csvImport';
-import { Modal, QrImage, TypeBadge } from '../ui/components';
+import { download, fileSlug, Modal, QrImage, TypeBadge } from '../ui/components';
 
 type StatusFilter = 'all' | 'never' | 'inside' | 'left';
 const SHOWN = 200;
@@ -38,8 +38,16 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
       && (status === 'all' || statusOf(p) === status));
   }, [participants, query, typeFilter, status]);
 
+  const exportOne = async (p: Participant) => {
+    try {
+      const record = await store.exportParticipant(p.id);
+      download(new Blob([JSON.stringify(record, null, 2)], { type: 'application/json' }), `donnees-${fileSlug(fullName(p))}.json`);
+      notify(`Données de ${fullName(p)} exportées (export tracé)`);
+    } catch (err) { notify(errorMessage(err), 'danger'); }
+  };
+
   const remove = async (p: Participant) => {
-    if (!confirm(`Supprimer ${fullName(p)} ? Ses passages seront aussi supprimés.`)) return;
+    if (!confirm(`Supprimer ${fullName(p)} et toutes ses données, passages compris ? Cette action est tracée et définitive.`)) return;
     try { await store.deleteParticipant(p.id); notify(`${fullName(p)} supprimé(e)`); }
     catch (err) { notify(errorMessage(err), 'danger'); }
   };
@@ -108,6 +116,8 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
                       <div className="row" style={{ flexWrap: 'nowrap' }}>
                         <button className="btn btn-secondary btn-small" onClick={() => setQrFor(p)} aria-label={`QR code de ${fullName(p)}`}>QR</button>
                         <button className="btn btn-secondary btn-small" onClick={() => setEditing(p)} aria-label={`Modifier ${fullName(p)}`}>Modifier</button>
+                        <button className="btn btn-secondary btn-small" onClick={() => void exportOne(p)} aria-label={`Exporter les données de ${fullName(p)}`}
+                          title="Export des données de la personne, à sa demande">Ses données</button>
                         <button className="btn btn-danger btn-small" onClick={() => remove(p)} aria-label={`Supprimer ${fullName(p)}`}>Supprimer</button>
                       </div>
                     </td>
