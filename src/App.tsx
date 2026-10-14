@@ -3,6 +3,7 @@ import { useRoute } from './app/router';
 import { Events, SignIn } from './pages/Home';
 import { EventShell } from './pages/EventShell';
 import { Members } from './pages/Members';
+import { DataProtection } from './pages/DataProtection';
 import { Access, Register } from './pages/Public';
 
 function Organizer({ route }: { route: string[] }) {
@@ -11,6 +12,7 @@ function Organizer({ route }: { route: string[] }) {
   if (!session) return <SignIn />;
   if (route[0] === 'e' && route[1]) return <EventShell key={session.user.id} eventId={route[1]} section={route[2] ?? 'direct'} />;
   if (route[0] === 'membres') return <Members />;
+  if (route[0] === 'donnees') return <DataProtection />;
   return <Events />;
 }
 

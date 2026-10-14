@@ -6,7 +6,10 @@ import { can } from '../domain/access';
 import { MAX_TYPES, nextTypeColor, TYPE_PALETTE } from '../domain/colors';
 import { newId } from '../domain/ids';
 import type { ParticipantType } from '../domain/model';
+import { privacyComplete, purgeDay, type PrivacyPolicy } from '../domain/privacy';
+import { parisDay } from '../domain/time';
 import { QrImage, TypeBadge } from '../ui/components';
+import { longDay, PrivacyFields } from '../ui/privacy';
 
 export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
@@ -18,6 +21,9 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
     warn: String(Math.round(event.thresholds.warn * 100)), critical: String(Math.round(event.thresholds.critical * 100)),
   });
   const [types, setTypes] = useState<ParticipantType[]>(event.types);
+  const [privacy, setPrivacy] = useState<PrivacyPolicy>(event.privacy);
+  const [privacyError, setPrivacyError] = useState('');
+  const purged = !!event.purgedAt;
   const [error, setError] = useState('');
   const registerUrl = publicUrl('inscription', event.id);
   const usage = (typeId: string) => participants.filter((p) => p.typeId === typeId).length;
@@ -41,6 +47,25 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
     } catch (err) { setError(errorMessage(err)); }
   };
 
+  const savePrivacy = async (e: FormEvent) => {
+    e.preventDefault();
+    setPrivacyError('');
+    try { await store.updateEvent(event.id, { privacy }); notify('Politique de confidentialité enregistrée'); }
+    catch (err) { setPrivacyError(errorMessage(err)); }
+  };
+
+  const privacyAsDefault = async () => {
+    try { await store.setOrgPrivacy(event.orgId, privacy); notify('Politique reprise pour les prochains événements de l\'organisation'); }
+    catch (err) { notify(errorMessage(err), 'danger'); }
+  };
+
+  const purgeNow = async () => {
+    const answer = prompt(`Purger maintenant les données personnelles des ${participants.length} participants de « ${event.name} » ? Seul le bilan anonyme sera conservé. Cette action est définitive.\n\nTapez PURGER pour confirmer.`);
+    if (answer?.trim().toUpperCase() !== 'PURGER') return;
+    try { await store.purgeEvent(event.id); notify('Données personnelles purgées ; le bilan anonyme est conservé'); }
+    catch (err) { notify(errorMessage(err), 'danger'); }
+  };
+
   const toggleRegistration = async () => {
     try {
       await store.updateEvent(event.id, { registrationOpen: !event.registrationOpen });
@@ -56,7 +81,7 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
   };
 
   const remove = async () => {
-    if (!confirm(`Supprimer définitivement « ${event.name} » et toutes les données de ses ${participants.length} participants ?`)) return;
+    if (!confirm(`Supprimer définitivement « ${event.name} » et toutes les données de ses ${participants.length} participants ? Son bilan anonyme sera conservé.`)) return;
     try { await store.deleteEvent(event.id); notify('Événement supprimé'); navigate(); }
     catch (err) { notify(errorMessage(err), 'danger'); }
   };
@@ -72,8 +97,15 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
             </p>
             <p className="muted">Les participants choisissent leur type, s'inscrivent et obtiennent aussitôt leur QR code. Imprimez ce QR code sur une affiche ou partagez le lien.</p>
             {event.registrationOpen && <p className="small" style={{ wordBreak: 'break-all' }}>{registerUrl}</p>}
+            {!event.registrationOpen && !purged && !privacyComplete(event.privacy) && (
+              <p className="notice notice-warn">
+                Avant d'ouvrir les inscriptions, renseignez le responsable du traitement et le contact pour les données
+                personnelles (<a href="#privacy-title">section Données personnelles</a>) : ils sont affichés sur le formulaire.
+              </p>
+            )}
             <div className="row">
-              <button className={event.registrationOpen ? 'btn btn-secondary' : 'btn'} onClick={toggleRegistration}>
+              <button className={event.registrationOpen ? 'btn btn-secondary' : 'btn'} onClick={toggleRegistration}
+                disabled={!event.registrationOpen && (purged || !privacyComplete(event.privacy))}>
                 {event.registrationOpen ? 'Fermer les inscriptions' : 'Ouvrir les inscriptions'}
               </button>
               {event.registrationOpen && <>
@@ -136,10 +168,28 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
         <div><button className="btn" type="submit">Enregistrer</button></div>
       </form>
 
+      <form className="card stack" onSubmit={savePrivacy} aria-labelledby="privacy-title" noValidate>
+        <h2 id="privacy-title" style={{ marginBottom: 0 }}>Données personnelles</h2>
+        <p className="muted">
+          L'organisateur est responsable du traitement ; ces informations sont affichées sur le formulaire d'inscription et la
+          page de chaque participant. À l'échéance, les données personnelles sont effacées automatiquement : seul un bilan anonyme est conservé.
+        </p>
+        {purged
+          ? <p className="notice notice-info">Données personnelles purgées le {longDay(parisDay(event.purgedAt!))}.</p>
+          : <p>Effacement automatique prévu le <strong>{longDay(purgeDay({ endDate: event.endDate, privacy }))}</strong>.</p>}
+        <PrivacyFields value={privacy} onChange={setPrivacy} idPrefix="ev-privacy" />
+        {privacyError && <p role="alert" className="error">{privacyError}</p>}
+        <div className="row">
+          <button className="btn" type="submit">Enregistrer</button>
+          <button className="btn btn-secondary" type="button" onClick={() => void privacyAsDefault()}>Reprendre pour les prochains événements</button>
+        </div>
+      </form>
+
       <section className="card stack" aria-labelledby="manage-title">
         <h2 id="manage-title" style={{ marginBottom: 0 }}>Gestion</h2>
         <div className="row">
           <button className="btn btn-secondary" onClick={duplicate}>Dupliquer pour une prochaine édition</button>
+          {can(snapshot.role, 'event.delete') && !purged && <button className="btn btn-danger" onClick={() => void purgeNow()}>Purger les données personnelles</button>}
           {can(snapshot.role, 'event.delete') && <button className="btn btn-danger" onClick={remove}>Supprimer l'événement</button>}
         </div>
       </section>

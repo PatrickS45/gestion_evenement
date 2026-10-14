@@ -107,6 +107,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .pill-ok { background: var(--ok-soft); color: var(--ok); }
 .pill-muted { background: var(--line-soft); color: var(--ink-2); }
+.pill-warn { background: var(--warn-soft); color: var(--warn); }
 
 .notice { border-radius: 8px; padding: 12px 14px; font-weight: 600; }
 .notice-ok { background: var(--ok-soft); color: var(--ok); }

@@ -3,23 +3,10 @@ import { errorMessage, useStore } from '../app/context';
 import { navigate } from '../app/router';
 import type { AccessPage, RegistrationForm, RegistrationInfo } from '../data/store';
 import { QrImage, TypeBadge } from '../ui/components';
+import { PublicPrivacyNotice } from '../ui/privacy';
 
 const JUST_REGISTERED = 'event-control:just-registered';
 const longDate = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-
-function PrivacyNotice() {
-  return (
-    <details>
-      <summary className="small" style={{ cursor: 'pointer' }}>Utilisation de vos données</summary>
-      <p className="small" style={{ marginTop: 8 }}>
-        Vos données (nom, email, société, téléphone, type) sont utilisées par l'organisateur de l'événement, responsable
-        du traitement, uniquement pour gérer votre inscription et votre accès. Les heures d'entrée et de sortie sont
-        enregistrées pour le contrôle d'accès et des statistiques anonymes. Vos données ne sont ni vendues ni cédées, et
-        sont supprimées après l'événement. Vous pouvez demander à l'organisateur d'y accéder, de les corriger ou de les effacer.
-      </p>
-    </details>
-  );
-}
 
 export function Register({ eventId }: { eventId: string }) {
   const store = useStore();
@@ -90,7 +77,7 @@ export function Register({ eventId }: { eventId: string }) {
           <input type="checkbox" checked={form.consent} onChange={set('consent')} style={{ width: 18, height: 18, marginTop: 3 }} />
           <span className="required">J'accepte que mes données soient utilisées pour gérer mon inscription et mon accès à l'événement.</span>
         </label>
-        <PrivacyNotice />
+        <PublicPrivacyNotice privacy={info.privacy} />
         <p className="small">Les champs marqués * sont obligatoires.</p>
         {error && <p role="alert" className="error">{error}</p>}
         <button className="btn btn-big" type="submit" disabled={busy}>{busy ? 'Inscription…' : 'Je m\'inscris'}</button>
@@ -137,7 +124,7 @@ export function Access({ token }: { token: string }) {
           {page.startDate === page.endDate ? longDate(page.startDate) : `Du ${longDate(page.startDate)} au ${longDate(page.endDate)}`}
           {page.venue && <><br />{page.venue}</>}
         </p>
-        <div style={{ width: '100%', textAlign: 'left' }}><PrivacyNotice /></div>
+        <div style={{ width: '100%', textAlign: 'left' }}><PublicPrivacyNotice privacy={page.privacy} /></div>
       </div>
     </main>
   );

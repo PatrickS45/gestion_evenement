@@ -4,6 +4,9 @@ import { href, navigate } from '../app/router';
 import { PASSWORD_MIN_LENGTH } from '../data/password';
 import { can, ROLE_LABELS } from '../domain/access';
 import type { EventInfo } from '../domain/model';
+import { purgeDay, retentionState } from '../domain/privacy';
+import { parisDay } from '../domain/time';
+import { longDay } from '../ui/privacy';
 
 const dayLabel = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -132,6 +135,7 @@ export function Events() {
 
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
   const memberships = session?.memberships ?? [];
+  const today = parisDay(Date.now());
 
   return (
     <>
@@ -153,6 +157,7 @@ export function Events() {
                 </select>
               </div>
             )}
+            {can(org?.role, 'stats.export') && <a className="btn btn-secondary" href={href('donnees')}>Données personnelles</a>}
             {can(org?.role, 'members.manage') && <a className="btn btn-secondary" href={href('membres')}>Membres</a>}
           </div>
         </div>
@@ -171,6 +176,11 @@ export function Events() {
                         {ev.venue && <><br />{ev.venue}</>}
                       </p>
                       <p className="small">Jauge : {ev.capacity.toLocaleString('fr-FR')} personnes</p>
+                      {ev.purgedAt
+                        ? <p><span className="pill pill-muted">Données purgées · bilan conservé</span></p>
+                        : retentionState(ev, today) !== 'kept' && can(org.role, 'event.edit') && (
+                          <p><span className="pill pill-warn">Effacement des données le {longDay(purgeDay(ev))}</span></p>
+                        )}
                     </li>
                   ))}
                 </ul>
