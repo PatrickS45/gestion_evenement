@@ -8,6 +8,7 @@ const at = (hhmm: string) => `2027-03-11T${hhmm}:00+01:00`;
 
 const snapshot: EventSnapshot = {
   event: makeEvent(),
+  role: 'owner',
   participants: [
     makeParticipant({ id: 'a', lastName: '=HYPERLINK("x")', firstName: 'Eve', typeId: 'exposant', company: 'ACME', phone: '+33 6 12 34 56 78', inside: true, entryCount: 1, firstEntryAt: at('09:00') }),
     makeParticipant({ id: 'b', lastName: 'Roy', firstName: 'Marc', typeId: 'magasin', company: 'Roy & Fils' }),

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { errorMessage, useAgent, useNotify, useNow, useStore } from '../app/context';
+import { errorMessage, useNotify, useNow, useSession, useStore } from '../app/context';
+import { can } from '../domain/access';
 import type { EventSnapshot } from '../data/store';
 import { liveView } from '../domain/attendance';
 import { GAUGE_LEVELS } from '../domain/gauge';
@@ -12,7 +13,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`;
 export function Live({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
   const notify = useNotify();
-  const { agent } = useAgent();
+  const { stationId } = useSession();
   const now = useNow();
   const ref = useRef<HTMLElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -29,9 +30,9 @@ export function Live({ snapshot }: { snapshot: EventSnapshot }) {
   }, []);
 
   const closeDay = async () => {
-    if (!agent || !confirm(`Enregistrer la sortie des ${plural(live.present, 'personne')} encore comptées dans la salle ?`)) return;
+    if (!confirm(`Enregistrer la sortie des ${plural(live.present, 'personne')} encore comptées dans la salle ?`)) return;
     try {
-      const n = await store.closeDay(snapshot.event.id, agent);
+      const n = await store.closeDay(snapshot.event.id, stationId);
       notify(`Journée clôturée : ${plural(n, 'sortie')} enregistrée${n > 1 ? 's' : ''}`);
     } catch (err) { notify(errorMessage(err), 'danger'); }
   };
@@ -52,6 +53,14 @@ export function Live({ snapshot }: { snapshot: EventSnapshot }) {
       {!live.consistent && (
         <p className="notice notice-warn" role="alert">
           Écart entre le nombre de présents et le journal des passages : contactez le support avant la fin de l'événement.
+        </p>
+      )}
+
+      {live.duplicates.length > 0 && (
+        <p className="notice notice-info" role="status">
+          {plural(live.duplicates.length, 'doublon hors ligne')} : la même personne a été enregistrée sur deux postes coupés du réseau.
+          Le comptage est corrigé ; ces passages restent dans le journal, marqués « doublon ».
+          {!fullscreen && <> <a href="#duplicates-title">Voir le détail</a></>}
         </p>
       )}
 
@@ -144,6 +153,7 @@ export function Live({ snapshot }: { snapshot: EventSnapshot }) {
                   </span>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
                     {names.get(p.participantId) ?? '(supprimé)'}{p.origin === 'closing' && <span className="small"> · clôture</span>}
+                    {p.origin === 'offline' && <span className="small"> · hors ligne{p.offlineDuplicate && ', doublon (non compté)'}</span>}
                   </span>
                   <TypeBadge type={typeById.get(p.typeId)} />
                   <span className="small" style={{ textAlign: 'right' }}>{parisTime(p.at)}</span>
@@ -153,14 +163,37 @@ export function Live({ snapshot }: { snapshot: EventSnapshot }) {
           )}
         </section>
 
-        <section className="card stack" aria-labelledby="close-title">
+        {live.duplicates.length > 0 && (
+          <section className="card" aria-labelledby="duplicates-title">
+            <h2 id="duplicates-title">Doublons hors ligne</h2>
+            <p className="muted">Passages enregistrés pendant une coupure du réseau alors que la personne était déjà entrée (ou sortie) : ils ne sont pas comptés.</p>
+            <div className="table-wrap">
+              <table>
+                <thead><tr>
+                  <th scope="col">Participant</th><th scope="col">Doublon</th><th scope="col">Déjà enregistré</th>
+                </tr></thead>
+                <tbody>{live.duplicates.map(({ duplicate: d, original: o }) => (
+                  <tr key={d.id}>
+                    <td>{names.get(d.participantId) ?? '(supprimé)'} <TypeBadge type={typeById.get(d.typeId)} /></td>
+                    <td>{d.direction === 'in' ? 'Entrée' : 'Sortie'} à {parisTime(d.at)} <span className="small">· {d.stationId}, {d.agentName}</span></td>
+                    <td>{o
+                      ? <>{o.direction === 'in' ? 'Entrée' : 'Sortie'} à {parisTime(o.at)} <span className="small">· {o.stationId}, {o.agentName}</span></>
+                      : <span className="small">Jamais entré(e)</span>}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {can(snapshot.role, 'day.close') && <section className="card stack" aria-labelledby="close-title">
           <h2 id="close-title" style={{ marginBottom: 0 }}>Fin de journée</h2>
           <p className="muted">
             Les personnes qui n'ont pas scanné leur sortie restent comptées comme présentes. En fin de journée,
             enregistrez leur sortie pour repartir de zéro le lendemain.
           </p>
           <div><button className="btn btn-secondary" onClick={closeDay} disabled={live.present === 0}>Clôturer la journée ({plural(live.present, 'présent')})</button></div>
-        </section>
+        </section>}
       </>}
     </section>
   );

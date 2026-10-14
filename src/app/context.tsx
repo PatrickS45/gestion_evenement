@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { Agent, EventSnapshot, EventStore } from '../data/store';
-import { newId } from '../domain/ids';
+import { StationStore, type StationStatus } from '../data/stationStore';
+import type { EventSnapshot, EventStore, Membership, Session } from '../data/store';
 
 // ─── Accès aux données ───────────────────────────────────────────────
 
@@ -16,15 +16,27 @@ export function useStore(): EventStore {
   return store;
 }
 
+/** Poste résistant aux coupures (F-60 à F-64) : présent seulement avec le serveur. */
+export function useStation(): StationStore | null {
+  const store = useStore();
+  return store instanceof StationStore ? store : null;
+}
+
+/** État du poste (en ligne, passages en attente…), tenu à jour ; null sans serveur. */
+export function useStationStatus(): StationStatus | null {
+  const station = useStation();
+  const [status, setStatus] = useState<StationStatus | null>(() => station?.getStatus() ?? null);
+  useEffect(() => station?.onStatus(setStatus), [station]);
+  return status;
+}
+
 /** Données d'un événement, tenues à jour en temps réel ; undefined pendant le chargement, null s'il n'existe pas. */
 export function useEventSnapshot(eventId: string): EventSnapshot | null | undefined {
   const store = useStore();
   const [snapshot, setSnapshot] = useState<EventSnapshot | null | undefined>(undefined);
   useEffect(() => {
-    let received = false;
-    const unsubscribe = store.subscribe(eventId, (s) => { received = true; setSnapshot(s); });
-    if (!received) setSnapshot(null);
-    return unsubscribe;
+    setSnapshot(undefined);
+    return store.subscribe(eventId, setSnapshot);
   }, [store, eventId]);
   return snapshot;
 }
@@ -39,17 +51,10 @@ export function useNow(intervalMs = 30_000): number {
   return now;
 }
 
-// ─── Agent d'accueil sur ce poste ────────────────────────────────────
-// En mode local, l'identité est déclarative : la vraie connexion (F-01) arrive avec le serveur.
+// ─── Utilisateur connecté et poste de scan (F-01, F-02) ──────────────
 
-const PROFILE_KEY = 'event-control:profile';
 const STATION_KEY = 'event-control:station';
-
-interface Profile { id: string; name: string }
-
-function readProfile(): Profile | null {
-  try { return JSON.parse(localStorage.getItem(PROFILE_KEY) ?? 'null') as Profile | null; } catch { return null; }
-}
+const ORG_KEY = 'event-control:org';
 
 /** Identifiant du poste : propre à chaque onglet, pour distinguer deux postes sur une même machine. */
 function stationName(): string {
@@ -60,32 +65,47 @@ function stationName(): string {
   } catch { return 'Poste'; }
 }
 
-interface AgentState {
-  agent: Agent | null;
-  signIn: (name: string) => void;
-  signOut: () => void;
+function readOrg(): string | null {
+  try { return localStorage.getItem(ORG_KEY); } catch { return null; }
 }
 
-const AgentContext = createContext<AgentState | null>(null);
-
-export function AgentProvider({ children }: { children: ReactNode }) {
-  const [profile, setProfile] = useState<Profile | null>(readProfile);
-  const station = useMemo(stationName, []);
-  const value = useMemo<AgentState>(() => ({
-    agent: profile ? { id: profile.id, name: profile.name, stationId: station } : null,
-    signIn: (name) => {
-      const p = { id: readProfile()?.id ?? newId(), name: name.trim() };
-      localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
-      setProfile(p);
-    },
-    signOut: () => { localStorage.removeItem(PROFILE_KEY); setProfile(null); },
-  }), [profile, station]);
-  return <AgentContext.Provider value={value}>{children}</AgentContext.Provider>;
+interface SessionState {
+  /** undefined pendant le chargement, null si personne n'est connecté. */
+  session: Session | null | undefined;
+  /** Organisation affichée : la dernière choisie, sinon la première. */
+  org: Membership | null;
+  stationId: string;
+  /** Mémorise la session renvoyée par le stockage après connexion, inscription ou création d'organisation. */
+  setSession: (session: Session | null) => void;
+  selectOrg: (orgId: string) => void;
+  signOut: () => Promise<void>;
 }
 
-export function useAgent(): AgentState {
-  const v = useContext(AgentContext);
-  if (!v) throw new Error('AgentProvider manquant');
+const SessionContext = createContext<SessionState | null>(null);
+
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const store = useStore();
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const [orgId, setOrgId] = useState<string | null>(readOrg);
+  const stationId = useMemo(stationName, []);
+
+  useEffect(() => { store.getSession().then(setSession, () => setSession(null)); }, [store]);
+
+  const value = useMemo<SessionState>(() => {
+    const memberships = session?.memberships ?? [];
+    return {
+      session, stationId, setSession,
+      org: memberships.find((m) => m.orgId === orgId) ?? memberships[0] ?? null,
+      selectOrg: (id) => { try { localStorage.setItem(ORG_KEY, id); } catch { /* préférence non mémorisée */ } setOrgId(id); },
+      signOut: async () => { await store.signOut(); setSession(null); },
+    };
+  }, [store, session, orgId, stationId]);
+  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+}
+
+export function useSession(): SessionState {
+  const v = useContext(SessionContext);
+  if (!v) throw new Error('SessionProvider manquant');
   return v;
 }
 

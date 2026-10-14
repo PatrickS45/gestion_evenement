@@ -1,24 +1,28 @@
 import { useEffect } from 'react';
-import { useAgent, useEventSnapshot } from '../app/context';
+import { useEventSnapshot } from '../app/context';
 import { href } from '../app/router';
+import { can, type Action } from '../domain/access';
+import { UserMeta } from './Home';
 import { Participants } from './Participants';
 import { Scan } from './Scan';
 import { Live } from './Live';
 import { Settings } from './Settings';
 import { Exports } from './Exports';
+import { StationBar } from '../ui/StationBar';
 
-const SECTIONS = [
-  { id: 'direct', label: 'Direct' },
-  { id: 'scan', label: 'Scan' },
-  { id: 'participants', label: 'Participants' },
-  { id: 'exports', label: 'Statistiques et exports' },
-  { id: 'parametres', label: 'Paramètres' },
-] as const;
+/** Sections et droit requis pour les voir : l'agent d'accueil n'a accès qu'au direct et au scan. */
+const SECTIONS: readonly { id: string; label: string; requires: Action }[] = [
+  { id: 'direct', label: 'Direct', requires: 'scan' },
+  { id: 'scan', label: 'Scan', requires: 'scan' },
+  { id: 'participants', label: 'Participants', requires: 'participants.manage' },
+  { id: 'exports', label: 'Statistiques et exports', requires: 'stats.export' },
+  { id: 'parametres', label: 'Paramètres', requires: 'event.edit' },
+];
 
 export function EventShell({ eventId, section }: { eventId: string; section: string }) {
   const snapshot = useEventSnapshot(eventId);
-  const { agent } = useAgent();
-  const current = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];
+  const sections = SECTIONS.filter((s) => snapshot && can(snapshot.role, s.requires));
+  const current = sections.find((s) => s.id === section) ?? sections[0] ?? SECTIONS[0]!;
 
   useEffect(() => {
     if (snapshot) document.title = `${current.label} – ${snapshot.event.name} – Event Control`;
@@ -42,16 +46,17 @@ export function EventShell({ eventId, section }: { eventId: string; section: str
             <span aria-hidden="true"> › </span>
             <span style={{ fontWeight: 700 }}>{event.name}</span>
           </div>
-          <span className="topbar-meta">{agent?.name} · {agent?.stationId}</span>
+          <UserMeta role={snapshot.role} />
         </div>
       </header>
       <nav className="tabs no-print" aria-label="Sections de l'événement">
         <div className="tabs-inner">
-          {SECTIONS.map((s) => (
+          {sections.map((s) => (
             <a key={s.id} className="tab" href={href('e', eventId, s.id)} aria-current={s.id === current.id ? 'page' : undefined}>{s.label}</a>
           ))}
         </div>
       </nav>
+      <StationBar eventId={eventId} />
       <main className="page">
         <h1 className="sr-only">{current.label} – {event.name}</h1>
         {current.id === 'direct' && <Live snapshot={snapshot} />}

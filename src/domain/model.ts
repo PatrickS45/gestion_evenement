@@ -26,8 +26,23 @@ export interface GaugeThresholds {
   critical: number;
 }
 
+export interface Organization {
+  id: string;
+  name: string;
+  createdAt: Iso;
+}
+
+export interface User {
+  id: string;
+  /** En minuscules ; sert d'identifiant de connexion (F-01). */
+  email: string;
+  name: string;
+}
+
 export interface EventInfo {
   id: string;
+  /** Organisation propriétaire ; seuls ses membres accèdent à l'événement (NF-24). */
+  orgId: string;
   name: string;
   /** Jour de début, AAAA-MM-JJ (heure de Paris). */
   startDate: string;
@@ -94,6 +109,11 @@ export interface Refusal {
   participantId: string | null;
   /** Début du code lu, pour les QR codes inconnus. */
   sample: string;
+}
+
+/** Ordre alphabétique des participants : nom, puis prénom. */
+export function compareNames(a: Pick<Participant, 'firstName' | 'lastName'>, b: Pick<Participant, 'firstName' | 'lastName'>): number {
+  return a.lastName.localeCompare(b.lastName, 'fr') || a.firstName.localeCompare(b.firstName, 'fr');
 }
 
 export function fullName(p: Pick<Participant, 'firstName' | 'lastName'>): string {

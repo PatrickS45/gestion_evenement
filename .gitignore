@@ -3,3 +3,7 @@ dist/
 .env
 .env.local
 *.log
+# Serveur : binaire téléchargé, données locales, hooks compilés
+server/bin/
+server/pb_data/
+server/pb_hooks/lib/

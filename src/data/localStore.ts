@@ -1,32 +1,57 @@
 // Implémentation locale de EventStore : données dans le stockage du navigateur,
 // synchronisation en direct entre onglets (deux onglets = deux postes de scan).
 // Sert à la démonstration et préfigure le mode hors ligne (lot 2).
-import type { EventInfo, Participant, Passage, Refusal, ScanMethod } from '../domain/model';
+// Les droits y sont vérifiés comme ils le seront par le serveur (NF-20).
+import { can, type Action, type Role } from '../domain/access';
+import { compareNames, type EventInfo, type Organization, type Participant, type Passage, type Refusal, type ScanMethod, type User } from '../domain/model';
+import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncBatch, type SyncResult, type SyncStatus } from '../domain/offline';
 import { applyScan, decideScan } from '../domain/scan';
 import { DEFAULT_TYPES } from '../domain/colors';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
 import { newId, newToken } from '../domain/ids';
+import { hashPassword, PASSWORD_MIN_LENGTH, verifyPassword } from './password';
 import {
   StoreError,
-  type AccessPage, type Agent, type EventPatch, type EventSnapshot, type EventStore, type NewEvent,
+  type AccessPage, type EventPatch, type EventSnapshot, type EventStore, type Member, type NewEvent,
   type NewParticipant, type ParticipantPatch, type RegistrationForm, type RegistrationInfo, type ScanResult,
+  type Session, type SignUpInput,
 } from './store';
 
+interface StoredUser extends User { passwordHash: string }
+interface StoredMembership { orgId: string; userId: string; role: Role }
+
 interface Db {
-  version: 1;
+  version: 2;
+  users: Record<string, StoredUser>;
+  organizations: Record<string, Organization>;
+  memberships: StoredMembership[];
   events: Record<string, EventInfo>;
   participants: Record<string, Participant>;
   passages: Passage[];
   refusals: Refusal[];
 }
 
-const EMPTY: Db = { version: 1, events: {}, participants: {}, passages: [], refusals: [] };
+const EMPTY: Db = {
+  version: 2, users: {}, organizations: {}, memberships: [], events: {}, participants: {}, passages: [], refusals: [],
+};
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const normEmail = (email: string) => email.trim().toLowerCase();
+
+/** Limitation des tentatives de connexion (NF-22) : au plus 5 échecs par minute et par poste. */
+const MAX_FAILURES = 5;
+const FAILURE_WINDOW_MS = 60_000;
 
 /** Stockage clé-valeur (localStorage dans le navigateur, Map dans les tests). */
 export interface KeyValue {
   get(key: string): string | null;
+  /** Une valeur vide efface la clé. */
   set(key: string, value: string): void;
+}
+
+/** Stockage en mémoire, pour les tests et à défaut de stockage du navigateur. */
+export function memoryKeyValue(): KeyValue {
+  const data = new Map<string, string>();
+  return { get: (k) => data.get(k) || null, set: (k, v) => { data.set(k, v); } };
 }
 
 /** Canal de notification entre instances (BroadcastChannel dans le navigateur). */
@@ -49,14 +74,21 @@ export function queueLock(): Lock {
 }
 
 const KEY = 'event-control:db';
+const SESSION_KEY = 'event-control:session';
 
 export class LocalStore implements EventStore {
-  private listeners = new Map<string, Set<(s: EventSnapshot) => void>>();
+  private listeners = new Map<string, Set<(s: EventSnapshot | null) => void>>();
+  private failures: number[] = [];
 
+  /**
+   * @param storage données partagées par tous les postes
+   * @param session utilisateur connecté sur ce poste
+   */
   constructor(
     private storage: KeyValue,
     private bus: Bus | null,
     private lock: Lock = queueLock(),
+    private session: KeyValue = memoryKeyValue(),
     private now: () => Date = () => new Date(),
   ) {
     bus?.listen((eventId) => this.emit(eventId));
@@ -67,7 +99,7 @@ export class LocalStore implements EventStore {
   private read(): Db {
     const raw = this.storage.get(KEY);
     if (!raw) return structuredClone(EMPTY);
-    try { return { ...structuredClone(EMPTY), ...JSON.parse(raw) as Db }; }
+    try { return { ...structuredClone(EMPTY), ...JSON.parse(raw) as Db, version: 2 }; }
     catch { return structuredClone(EMPTY); }
   }
 
@@ -85,12 +117,13 @@ export class LocalStore implements EventStore {
 
   private snapshot(db: Db, eventId: string): EventSnapshot | null {
     const event = db.events[eventId];
-    if (!event) return null;
+    const user = this.sessionUser(db);
+    const role = event && user ? this.roleIn(db, user.id, event.orgId) : null;
+    if (!event || !role) return null;
     return {
       event,
-      participants: Object.values(db.participants)
-        .filter((p) => p.eventId === eventId)
-        .sort((a, b) => a.lastName.localeCompare(b.lastName, 'fr') || a.firstName.localeCompare(b.firstName, 'fr')),
+      role,
+      participants: Object.values(db.participants).filter((p) => p.eventId === eventId).sort(compareNames),
       passages: db.passages.filter((p) => p.eventId === eventId),
       refusals: db.refusals.filter((r) => r.eventId === eventId),
     };
@@ -100,25 +133,55 @@ export class LocalStore implements EventStore {
     const set = this.listeners.get(eventId);
     if (!set?.size) return;
     const snap = this.snapshot(this.read(), eventId);
-    if (snap) set.forEach((l) => l(snap));
+    set.forEach((l) => l(snap));
   }
 
   private nowIso() { return this.now().toISOString(); }
 
-  private requireEvent(db: Db, id: string): EventInfo {
+  // ── Droits (NF-20) ─────────────────────────────────────────────────
+
+  private sessionUser(db: Db): StoredUser | null {
+    const id = this.session.get(SESSION_KEY);
+    return (id && db.users[id]) || null;
+  }
+
+  private roleIn(db: Db, userId: string, orgId: string): Role | null {
+    return db.memberships.find((m) => m.userId === userId && m.orgId === orgId)?.role ?? null;
+  }
+
+  private requireUser(db: Db): StoredUser {
+    const user = this.sessionUser(db);
+    if (!user) throw new StoreError('unauthenticated', 'Connectez-vous pour continuer');
+    return user;
+  }
+
+  /** Utilisateur connecté, s'il a le droit `action` dans l'organisation. */
+  private requireRole(db: Db, orgId: string, action: Action): StoredUser {
+    const user = this.requireUser(db);
+    const role = this.roleIn(db, user.id, orgId);
+    if (!role) throw new StoreError('not-found', 'Organisation introuvable');
+    if (!can(role, action)) throw new StoreError('forbidden', 'Votre rôle ne permet pas cette action');
+    return user;
+  }
+
+  /** Pour qui n'est pas membre de son organisation, un événement n'existe pas (NF-24). */
+  private requireEvent(db: Db, id: string, action: Action): EventInfo {
+    const user = this.requireUser(db);
     const e = db.events[id];
-    if (!e) throw new StoreError('not-found', 'Événement introuvable');
+    if (!e || !this.roleIn(db, user.id, e.orgId)) throw new StoreError('not-found', 'Événement introuvable');
+    this.requireRole(db, e.orgId, action);
     return e;
   }
 
-  private requireParticipant(db: Db, id: string): Participant {
+  private requireParticipant(db: Db, id: string, action: Action): Participant {
     const p = db.participants[id];
     if (!p) throw new StoreError('not-found', 'Participant introuvable');
+    this.requireEvent(db, p.eventId, action);
     return p;
   }
 
   private emailTaken(db: Db, eventId: string, email: string, exceptId?: string) {
-    const e = email.trim().toLowerCase();
+    const e = normEmail(email);
     return !!e && Object.values(db.participants).some((p) => p.eventId === eventId && p.id !== exceptId && p.email === e);
   }
 
@@ -127,7 +190,7 @@ export class LocalStore implements EventStore {
       id: newId(), eventId,
       firstName: input.firstName.trim().slice(0, 100),
       lastName: input.lastName.trim().slice(0, 100),
-      email: input.email.trim().toLowerCase().slice(0, 320),
+      email: normEmail(input.email).slice(0, 320),
       phone: (input.phone ?? '').trim().slice(0, 40),
       company: (input.company ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
       typeId: input.typeId,
@@ -137,27 +200,162 @@ export class LocalStore implements EventStore {
     };
   }
 
-  // ── Événements ─────────────────────────────────────────────────────
+  // ── Comptes et organisations ───────────────────────────────────────
 
-  async listEvents() {
-    return Object.values(this.read().events).sort((a, b) => b.startDate.localeCompare(a.startDate));
+  private sessionOf(db: Db, user: StoredUser): Session {
+    return {
+      user: { id: user.id, email: user.email, name: user.name },
+      memberships: db.memberships
+        .filter((m) => m.userId === user.id && db.organizations[m.orgId])
+        .map((m) => ({ orgId: m.orgId, orgName: db.organizations[m.orgId]!.name, role: m.role }))
+        .sort((a, b) => a.orgName.localeCompare(b.orgName, 'fr')),
+    };
   }
 
-  async createEvent(input: NewEvent) {
+  private member(db: Db, m: StoredMembership): Member {
+    const u = db.users[m.userId]!;
+    return { userId: u.id, email: u.email, name: u.name, role: m.role };
+  }
+
+  private newOrganization(db: Db, name: string, ownerId: string): Organization {
+    const org: Organization = { id: newId(), name: name.trim().slice(0, 200), createdAt: this.nowIso() };
+    if (!org.name) throw new StoreError('invalid', 'Le nom de l\'organisation est obligatoire');
+    db.organizations[org.id] = org;
+    db.memberships.push({ orgId: org.id, userId: ownerId, role: 'owner' });
+    return org;
+  }
+
+  /** Vrai s'il reste un autre propriétaire que `userId`. */
+  private hasOtherOwner(db: Db, orgId: string, userId: string) {
+    return db.memberships.some((m) => m.orgId === orgId && m.userId !== userId && m.role === 'owner');
+  }
+
+  async getSession() {
+    const db = this.read();
+    const user = this.sessionUser(db);
+    return user ? this.sessionOf(db, user) : null;
+  }
+
+  async signUp(input: SignUpInput) {
+    const email = normEmail(input.email);
+    if (!input.name.trim()) throw new StoreError('invalid', 'Le nom est obligatoire');
+    if (!EMAIL.test(email)) throw new StoreError('invalid', 'Adresse email invalide');
+    if (input.password.length < PASSWORD_MIN_LENGTH) {
+      throw new StoreError('invalid', `Le mot de passe doit compter au moins ${PASSWORD_MIN_LENGTH} caractères`);
+    }
+    const passwordHash = await hashPassword(input.password);
+    const user = await this.transaction([], (db) => {
+      if (Object.values(db.users).some((u) => u.email === email)) {
+        throw new StoreError('duplicate', 'Un compte existe déjà avec cette adresse email');
+      }
+      const u: StoredUser = { id: newId(), email, name: input.name.trim().slice(0, 100), passwordHash };
+      db.users[u.id] = u;
+      const org = this.newOrganization(db, input.organization, u.id);
+      // Événements créés avant l'arrivée des comptes : rattachés à la première organisation créée
+      for (const e of Object.values(db.events)) if (!e.orgId) e.orgId = org.id;
+      return u;
+    });
+    this.session.set(SESSION_KEY, user.id);
+    return (await this.getSession())!;
+  }
+
+  async signIn(email: string, password: string) {
+    const t = this.now().getTime();
+    this.failures = this.failures.filter((f) => t - f < FAILURE_WINDOW_MS);
+    if (this.failures.length >= MAX_FAILURES) {
+      throw new StoreError('forbidden', 'Trop de tentatives de connexion, réessayez dans une minute');
+    }
+    const user = Object.values(this.read().users).find((u) => u.email === normEmail(email));
+    if (!user || !await verifyPassword(password, user.passwordHash)) {
+      this.failures.push(t);
+      throw new StoreError('unauthenticated', 'Email ou mot de passe incorrect');
+    }
+    this.failures = [];
+    this.session.set(SESSION_KEY, user.id);
+    return (await this.getSession())!;
+  }
+
+  async signOut() {
+    this.session.set(SESSION_KEY, '');
+  }
+
+  async createOrganization(name: string) {
+    await this.transaction([], (db) => { this.newOrganization(db, name, this.requireUser(db).id); });
+    return (await this.getSession())!;
+  }
+
+  async listMembers(orgId: string) {
+    const db = this.read();
+    this.requireRole(db, orgId, 'members.manage');
+    return db.memberships
+      .filter((m) => m.orgId === orgId && db.users[m.userId])
+      .map((m) => this.member(db, m))
+      .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+  }
+
+  async addMember(orgId: string, email: string, role: Role) {
+    return this.transaction([], (db) => {
+      this.requireRole(db, orgId, 'members.manage');
+      const user = Object.values(db.users).find((u) => u.email === normEmail(email));
+      if (!user) throw new StoreError('not-found', 'Aucun compte avec cette adresse : la personne doit d\'abord créer le sien');
+      if (this.roleIn(db, user.id, orgId)) throw new StoreError('duplicate', `${user.name} est déjà membre`);
+      const m: StoredMembership = { orgId, userId: user.id, role };
+      db.memberships.push(m);
+      return this.member(db, m);
+    });
+  }
+
+  async setMemberRole(orgId: string, userId: string, role: Role) {
+    return this.transaction([], (db) => {
+      this.requireRole(db, orgId, 'members.manage');
+      const m = db.memberships.find((x) => x.orgId === orgId && x.userId === userId);
+      if (!m) throw new StoreError('not-found', 'Membre introuvable');
+      if (m.role === 'owner' && role !== 'owner' && !this.hasOtherOwner(db, orgId, userId)) {
+        throw new StoreError('invalid', 'L\'organisation doit garder au moins un propriétaire');
+      }
+      m.role = role;
+      return this.member(db, m);
+    });
+  }
+
+  async removeMember(orgId: string, userId: string) {
+    await this.transaction([], (db) => {
+      this.requireRole(db, orgId, 'members.manage');
+      if (!this.hasOtherOwner(db, orgId, userId) && this.roleIn(db, userId, orgId) === 'owner') {
+        throw new StoreError('invalid', 'L\'organisation doit garder au moins un propriétaire');
+      }
+      db.memberships = db.memberships.filter((m) => !(m.orgId === orgId && m.userId === userId));
+    });
+  }
+
+  // ── Événements ─────────────────────────────────────────────────────
+
+  async listEvents(orgId: string) {
+    const db = this.read();
+    this.requireRole(db, orgId, 'scan');
+    return Object.values(db.events)
+      .filter((e) => e.orgId === orgId)
+      .sort((a, b) => b.startDate.localeCompare(a.startDate));
+  }
+
+  async createEvent(orgId: string, input: NewEvent) {
     const event: EventInfo = {
-      id: newId(), name: input.name.trim().slice(0, 200), startDate: input.startDate, endDate: input.endDate,
+      id: newId(), orgId, name: input.name.trim().slice(0, 200), startDate: input.startDate, endDate: input.endDate,
       venue: (input.venue ?? '').trim(), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
       types: DEFAULT_TYPES, registrationOpen: false, createdAt: this.nowIso(),
     };
     if (!event.name) throw new StoreError('invalid', 'Le nom de l\'événement est obligatoire');
     if (event.endDate < event.startDate) throw new StoreError('invalid', 'La date de fin précède la date de début');
-    await this.transaction([], (db) => { db.events[event.id] = event; });
+    await this.transaction([], (db) => {
+      this.requireRole(db, orgId, 'event.create');
+      db.events[event.id] = event;
+    });
     return event;
   }
 
   async updateEvent(id: string, patch: EventPatch) {
     return this.transaction([id], (db) => {
-      const event = { ...this.requireEvent(db, id), ...patch };
+      const event = { ...this.requireEvent(db, id, 'event.edit'), ...patch };
       if (!Number.isInteger(event.capacity) || event.capacity < 0) throw new StoreError('invalid', 'Jauge invalide');
       db.events[id] = event;
       return event;
@@ -165,13 +363,16 @@ export class LocalStore implements EventStore {
   }
 
   async duplicateEvent(id: string, name: string) {
-    const source = this.requireEvent(this.read(), id);
-    const created = await this.createEvent({ name, startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity });
+    const source = this.requireEvent(this.read(), id, 'event.create');
+    const created = await this.createEvent(source.orgId, {
+      name, startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity,
+    });
     return this.updateEvent(created.id, { types: source.types, thresholds: source.thresholds });
   }
 
   async deleteEvent(id: string) {
     await this.transaction([id], (db) => {
+      this.requireEvent(db, id, 'event.delete');
       delete db.events[id];
       for (const p of Object.values(db.participants)) if (p.eventId === id) delete db.participants[p.id];
       db.passages = db.passages.filter((p) => p.eventId !== id);
@@ -183,7 +384,7 @@ export class LocalStore implements EventStore {
 
   async addParticipants(eventId: string, list: NewParticipant[]) {
     return this.transaction([eventId], (db) => {
-      const event = this.requireEvent(db, eventId);
+      const event = this.requireEvent(db, eventId, 'participants.manage');
       const typeIds = new Set(event.types.map((t) => t.id));
       return list.map((input) => {
         if (!input.firstName.trim() && !input.lastName.trim()) throw new StoreError('invalid', 'Nom manquant');
@@ -197,12 +398,12 @@ export class LocalStore implements EventStore {
   }
 
   async updateParticipant(id: string, patch: ParticipantPatch) {
-    const eventId = this.requireParticipant(this.read(), id).eventId;
+    const eventId = this.requireParticipant(this.read(), id, 'participants.manage').eventId;
     return this.transaction([eventId], (db) => {
-      const current = this.requireParticipant(db, id);
+      const current = this.requireParticipant(db, id, 'participants.manage');
       const next = { ...current, ...patch };
       if (patch.email !== undefined) {
-        next.email = patch.email.trim().toLowerCase();
+        next.email = normEmail(patch.email);
         if (next.email && !EMAIL.test(next.email)) throw new StoreError('invalid', 'Email invalide');
         if (this.emailTaken(db, eventId, next.email, id)) throw new StoreError('duplicate', `${next.email} est déjà inscrit`);
       }
@@ -212,17 +413,18 @@ export class LocalStore implements EventStore {
   }
 
   async deleteParticipant(id: string) {
-    const eventId = this.requireParticipant(this.read(), id).eventId;
+    const eventId = this.requireParticipant(this.read(), id, 'participants.manage').eventId;
     await this.transaction([eventId], (db) => {
+      this.requireParticipant(db, id, 'participants.manage');
       delete db.participants[id];
       db.passages = db.passages.filter((p) => p.participantId !== id); // RG-08
     });
   }
 
   async revokeToken(id: string) {
-    const eventId = this.requireParticipant(this.read(), id).eventId;
+    const eventId = this.requireParticipant(this.read(), id, 'participants.manage').eventId;
     return this.transaction([eventId], (db) => {
-      const p = { ...this.requireParticipant(db, id), token: newToken(), tokenRevoked: false };
+      const p = { ...this.requireParticipant(db, id, 'participants.manage'), token: newToken(), tokenRevoked: false };
       db.participants[id] = p;
       return p;
     });
@@ -230,13 +432,14 @@ export class LocalStore implements EventStore {
 
   // ── Scan ───────────────────────────────────────────────────────────
 
-  async scan(eventId: string, token: string, direction: 'in' | 'out', method: ScanMethod, agent: Agent): Promise<ScanResult> {
+  async scan(eventId: string, token: string, direction: 'in' | 'out', method: ScanMethod, stationId: string): Promise<ScanResult> {
     return this.transaction([eventId], (db) => {
-      this.requireEvent(db, eventId);
+      this.requireEvent(db, eventId, 'scan');
+      const agent = this.requireUser(db);
       const at = this.nowIso();
       const participant = Object.values(db.participants).find((p) => p.eventId === eventId && p.token === token.trim());
       const decision = decideScan(participant, direction);
-      const base = { eventId, at, agentId: agent.id, agentName: agent.name, stationId: agent.stationId, method };
+      const base = { eventId, at, agentId: agent.id, agentName: agent.name, stationId, method };
 
       if (decision.result === 'refused') {
         db.refusals.push({
@@ -254,9 +457,10 @@ export class LocalStore implements EventStore {
     });
   }
 
-  async closeDay(eventId: string, agent: Agent) {
+  async closeDay(eventId: string, stationId: string) {
     return this.transaction([eventId], (db) => {
-      this.requireEvent(db, eventId);
+      this.requireEvent(db, eventId, 'day.close');
+      const agent = this.requireUser(db);
       const at = this.nowIso();
       let count = 0;
       for (const p of Object.values(db.participants)) {
@@ -264,12 +468,61 @@ export class LocalStore implements EventStore {
         db.participants[p.id] = { ...p, inside: false, lastMoveAt: at };
         db.passages.push({
           id: newId(), eventId, participantId: p.id, typeId: p.typeId, direction: 'out', at,
-          agentId: agent.id, agentName: agent.name, stationId: agent.stationId,
+          agentId: agent.id, agentName: agent.name, stationId,
           method: 'manual', origin: 'closing', offlineDuplicate: false,
         });
         count++;
       }
       return count;
+    });
+  }
+
+  async syncOffline(eventId: string, batch: SyncBatch): Promise<SyncResult> {
+    if (batch.passages.length + batch.refusals.length > SYNC_MAX) throw new StoreError('invalid', 'Lot trop volumineux');
+    return this.transaction([eventId], (db) => {
+      this.requireEvent(db, eventId, 'scan');
+      const agent = this.requireUser(db);
+      const nowMs = this.now().getTime();
+      const base = { eventId, agentId: agent.id, agentName: agent.name, stationId: String(batch.stationId ?? '').slice(0, 60) };
+      const status = new Map<string, SyncStatus>();
+      let newDuplicates = 0;
+
+      // Passages regroupés par participant, puis journal de chacun rejoué (F-63)
+      const byParticipant = new Map<string, Passage[]>();
+      for (const raw of batch.passages) {
+        const p = parseOfflinePassage(raw, nowMs);
+        const participant = p && db.participants[p.participantId];
+        const elsewhere = p && db.passages.some((x) => x.id === p.id && x.participantId !== p.participantId);
+        if (!p || !participant || participant.eventId !== eventId || elsewhere) {
+          status.set(String((raw as { id?: unknown })?.id ?? ''), 'rejected');
+          continue;
+        }
+        const list = byParticipant.get(p.participantId) ?? [];
+        list.push({ ...base, ...p, typeId: participant.typeId, origin: 'offline', offlineDuplicate: false });
+        byParticipant.set(p.participantId, list);
+      }
+      for (const [participantId, received] of byParticipant) {
+        const known = db.passages.filter((x) => x.participantId === participantId);
+        const r = reconcile(db.participants[participantId]!, known, received);
+        const changed = new Map(r.changed.map((x) => [x.id, x]));
+        db.passages = db.passages.map((x) => changed.get(x.id) ?? x).concat(r.added);
+        db.participants[participantId] = r.participant;
+        newDuplicates += r.newDuplicates;
+        const flags = new Map([...known.map((x) => changed.get(x.id) ?? x), ...r.added].map((x) => [x.id, x.offlineDuplicate]));
+        for (const p of received) status.set(p.id, flags.get(p.id) ? 'duplicate' : 'counted');
+      }
+
+      for (const raw of batch.refusals) {
+        const r = parseOfflineRefusal(raw, nowMs);
+        if (r && !db.refusals.some((x) => x.id === r.id)) db.refusals.push({ ...base, ...r });
+      }
+      return {
+        passages: batch.passages.map((raw) => {
+          const id = String((raw as { id?: unknown })?.id ?? '');
+          return { id, status: status.get(id) ?? 'rejected' };
+        }),
+        newDuplicates,
+      };
     });
   }
 
@@ -309,14 +562,29 @@ export class LocalStore implements EventStore {
 
   // ── Temps réel ─────────────────────────────────────────────────────
 
-  subscribe(eventId: string, listener: (s: EventSnapshot) => void) {
+  subscribe(eventId: string, listener: (s: EventSnapshot | null) => void) {
     const set = this.listeners.get(eventId) ?? new Set();
     set.add(listener);
     this.listeners.set(eventId, set);
-    const snap = this.snapshot(this.read(), eventId);
-    if (snap) listener(snap);
+    listener(this.snapshot(this.read(), eventId));
     return () => { set.delete(listener); };
   }
+}
+
+/**
+ * Session propre à l'onglet (deux onglets peuvent être deux agents différents),
+ * recopiée dans localStorage pour qu'un nouvel onglet reprenne la dernière connexion.
+ */
+export function browserSession(): KeyValue {
+  return {
+    get: (k) => { try { return sessionStorage.getItem(k) ?? localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => {
+      try {
+        if (v) { sessionStorage.setItem(k, v); localStorage.setItem(k, v); }
+        else { sessionStorage.removeItem(k); localStorage.removeItem(k); }
+      } catch { /* stockage indisponible : la session ne survit pas au rechargement */ }
+    },
+  };
 }
 
 /** Instance pour le navigateur : localStorage, BroadcastChannel et Web Locks. */
@@ -332,5 +600,6 @@ export function createBrowserStore(): LocalStore {
       listen: (h) => channel.addEventListener('message', (e) => h(String(e.data))),
     },
     lock,
+    browserSession(),
   );
 }

@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src", "../src/domain", "../src/data/store.ts"],
+  "exclude": ["../src/**/*.test.ts", "../src/domain/fixtures.ts", "../src/domain/ids.ts"]
+}
