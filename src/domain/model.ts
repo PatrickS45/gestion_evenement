@@ -111,6 +111,11 @@ export interface Refusal {
   sample: string;
 }
 
+/** Ordre alphabétique des participants : nom, puis prénom. */
+export function compareNames(a: Pick<Participant, 'firstName' | 'lastName'>, b: Pick<Participant, 'firstName' | 'lastName'>): number {
+  return a.lastName.localeCompare(b.lastName, 'fr') || a.firstName.localeCompare(b.firstName, 'fr');
+}
+
 export function fullName(p: Pick<Participant, 'firstName' | 'lastName'>): string {
   return [p.firstName, p.lastName].filter(Boolean).join(' ');
 }

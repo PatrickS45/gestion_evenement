@@ -20,10 +20,8 @@ export function useEventSnapshot(eventId: string): EventSnapshot | null | undefi
   const store = useStore();
   const [snapshot, setSnapshot] = useState<EventSnapshot | null | undefined>(undefined);
   useEffect(() => {
-    let received = false;
-    const unsubscribe = store.subscribe(eventId, (s) => { received = true; setSnapshot(s); });
-    if (!received) setSnapshot(null);
-    return unsubscribe;
+    setSnapshot(undefined);
+    return store.subscribe(eventId, setSnapshot);
   }, [store, eventId]);
   return snapshot;
 }

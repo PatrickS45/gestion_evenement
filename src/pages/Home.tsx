@@ -36,7 +36,7 @@ export function SignIn() {
       <form className="public-card stack" onSubmit={submit} aria-labelledby="signin-title">
         <p style={{ fontWeight: 800, color: 'var(--brand)' }}>Event Control</p>
         <h1 id="signin-title" style={{ fontSize: 26 }}>{mode === 'signin' ? 'Connexion' : 'Créer un compte'}</h1>
-        <p className="muted">Version de démonstration : les données restent sur cet appareil.</p>
+        {!import.meta.env.VITE_POCKETBASE_URL && <p className="muted">Version de démonstration : les données restent sur cet appareil.</p>}
         {mode === 'signup' && (
           <div className="field">
             <label htmlFor="su-name" className="required">Votre nom</label>

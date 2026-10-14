@@ -3,7 +3,7 @@
 // Sert à la démonstration et préfigure le mode hors ligne (lot 2).
 // Les droits y sont vérifiés comme ils le seront par le serveur (NF-20).
 import { can, type Action, type Role } from '../domain/access';
-import type { EventInfo, Organization, Participant, Passage, Refusal, ScanMethod, User } from '../domain/model';
+import { compareNames, type EventInfo, type Organization, type Participant, type Passage, type Refusal, type ScanMethod, type User } from '../domain/model';
 import { applyScan, decideScan } from '../domain/scan';
 import { DEFAULT_TYPES } from '../domain/colors';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
@@ -76,7 +76,7 @@ const KEY = 'event-control:db';
 const SESSION_KEY = 'event-control:session';
 
 export class LocalStore implements EventStore {
-  private listeners = new Map<string, Set<(s: EventSnapshot) => void>>();
+  private listeners = new Map<string, Set<(s: EventSnapshot | null) => void>>();
   private failures: number[] = [];
 
   /**
@@ -122,9 +122,7 @@ export class LocalStore implements EventStore {
     return {
       event,
       role,
-      participants: Object.values(db.participants)
-        .filter((p) => p.eventId === eventId)
-        .sort((a, b) => a.lastName.localeCompare(b.lastName, 'fr') || a.firstName.localeCompare(b.firstName, 'fr')),
+      participants: Object.values(db.participants).filter((p) => p.eventId === eventId).sort(compareNames),
       passages: db.passages.filter((p) => p.eventId === eventId),
       refusals: db.refusals.filter((r) => r.eventId === eventId),
     };
@@ -134,7 +132,7 @@ export class LocalStore implements EventStore {
     const set = this.listeners.get(eventId);
     if (!set?.size) return;
     const snap = this.snapshot(this.read(), eventId);
-    if (snap) set.forEach((l) => l(snap));
+    set.forEach((l) => l(snap));
   }
 
   private nowIso() { return this.now().toISOString(); }
@@ -514,12 +512,11 @@ export class LocalStore implements EventStore {
 
   // ── Temps réel ─────────────────────────────────────────────────────
 
-  subscribe(eventId: string, listener: (s: EventSnapshot) => void) {
+  subscribe(eventId: string, listener: (s: EventSnapshot | null) => void) {
     const set = this.listeners.get(eventId) ?? new Set();
     set.add(listener);
     this.listeners.set(eventId, set);
-    const snap = this.snapshot(this.read(), eventId);
-    if (snap) listener(snap);
+    listener(this.snapshot(this.read(), eventId));
     return () => { set.delete(listener); };
   }
 }
@@ -528,7 +525,7 @@ export class LocalStore implements EventStore {
  * Session propre à l'onglet (deux onglets peuvent être deux agents différents),
  * recopiée dans localStorage pour qu'un nouvel onglet reprenne la dernière connexion.
  */
-function browserSession(): KeyValue {
+export function browserSession(): KeyValue {
   return {
     get: (k) => { try { return sessionStorage.getItem(k) ?? localStorage.getItem(k); } catch { return null; } },
     set: (k, v) => {

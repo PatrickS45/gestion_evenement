@@ -154,8 +154,9 @@ export interface EventStore {
   getAccessPage(token: string): Promise<AccessPage | null>;
 
   /**
-   * Suivi en temps réel d'un événement ; appelle `listener` à chaque changement, y compris venant d'un autre poste.
-   * Rien n'est transmis si l'utilisateur connecté n'est pas membre de son organisation (NF-24).
+   * Suivi en temps réel d'un événement ; appelle `listener` une fois chargé, puis à chaque changement,
+   * y compris venant d'un autre poste. `null` : événement introuvable, supprimé, ou dont l'utilisateur
+   * connecté n'est pas membre de l'organisation (NF-24).
    */
-  subscribe(eventId: string, listener: (snapshot: EventSnapshot) => void): () => void;
+  subscribe(eventId: string, listener: (snapshot: EventSnapshot | null) => void): () => void;
 }
