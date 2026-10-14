@@ -247,7 +247,7 @@ function ImportPanel({ snapshot, onDone }: { snapshot: EventSnapshot; onDone: ()
 
   const analyse = (content: string) => {
     setText(content);
-    setPreview(previewImport(content, snapshot.event.types, snapshot.participants.map((p) => p.email).filter(Boolean)));
+    setPreview(previewImport(content, snapshot.event.types, snapshot.participants.map((p) => p.email).filter(Boolean), snapshot.event.fields));
   };
 
   const readFile = (file: File | undefined) => {
@@ -296,6 +296,7 @@ function ImportPanel({ snapshot, onDone }: { snapshot: EventSnapshot; onDone: ()
             </p>
             <p className="small">
               Colonnes reconnues : {Object.entries(preview.columns).filter(([, v]) => v).map(([, v]) => `« ${v} »`).join(', ')}
+              {preview.fieldColumns.length > 0 && <><br />Réponses aux questions : {preview.fieldColumns.map((c) => `« ${c.header} »`).join(', ')}</>}
             </p>
             {[...preview.skipped.map((s) => `Ligne ${s.line} : ${s.reason}`),
               ...preview.duplicates.map((d) => `Ligne ${d.line} : ${d.email} déjà inscrit`),

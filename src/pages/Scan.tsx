@@ -5,7 +5,8 @@ import { fullName, type Direction, type ScanMethod } from '../domain/model';
 import { decisionMessage } from '../domain/scan';
 import { gaugeLevel } from '../domain/gauge';
 import { parisTime } from '../domain/time';
-import { CameraScanner } from '../ui/CameraScanner';
+import { Suspense } from 'react';
+import { LazyCameraScanner } from '../app/lazy';
 import { GaugeBar, Modal, TypeBadge, TypeBanner } from '../ui/components';
 
 const MODE_KEY = 'event-control:station-mode';
@@ -141,7 +142,9 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
         <h2 id="cam-title" style={{ marginBottom: 0 }}>Caméra</h2>
         {camera
           ? <>
-              <CameraScanner onCode={(c) => void handle(c, 'camera')} paused={overCapacity !== null} />
+              <Suspense fallback={<p role="status">Démarrage de la caméra…</p>}>
+                <LazyCameraScanner onCode={(c) => void handle(c, 'camera')} paused={overCapacity !== null} />
+              </Suspense>
               <button className="btn btn-secondary" onClick={() => setCamera(false)}>Arrêter la caméra</button>
             </>
           : <button className="btn btn-big" onClick={() => setCamera(true)}>Activer la caméra</button>}

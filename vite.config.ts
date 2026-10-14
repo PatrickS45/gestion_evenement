@@ -6,6 +6,8 @@ export default defineConfig(({ mode }) => ({
   // En développement, /api est relayé vers PocketBase : avec VITE_POCKETBASE_URL=/ (voir .env.example),
   // un téléphone du réseau local n'a besoin que de l'adresse du serveur Vite (npm run dev -- --host)
   server: { port: 5173, proxy: { '/api': 'http://127.0.0.1:8090' } },
+  // Liste des fichiers construits : le service worker les garde tous, pour le fonctionnement hors ligne
+  build: { manifest: 'asset-manifest.json' },
   test: {
     globals: true,
     environment: 'node',

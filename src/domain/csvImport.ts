@@ -1,5 +1,6 @@
 // Import de participants depuis un CSV ou un copier-coller de tableur (F-22).
 // Analyse en deux temps : on calcule un aperçu, l'utilisateur valide, puis on enregistre.
+import { checkAnswers, type Answers, type CustomField } from './fields';
 import type { ParticipantType } from './model';
 
 export type ImportField = 'lastName' | 'firstName' | 'email' | 'phone' | 'company' | 'type';
@@ -12,11 +13,15 @@ export interface ImportRow {
   phone: string;
   company: string;
   typeId: string;
+  /** Réponses aux questions de l'événement, déjà vérifiées (F-33). */
+  answers: Answers;
 }
 
 export interface ImportPreview {
   /** Colonne retenue pour chaque champ (en-tête d'origine), ou null si absente. */
   columns: Record<ImportField, string | null>;
+  /** Colonnes reconnues comme des réponses aux questions de l'événement (F-33). */
+  fieldColumns: { fieldId: string; label: string; header: string }[];
   accepted: ImportRow[];
   skipped: { line: number; reason: string }[];
   duplicates: { line: number; email: string }[];
@@ -78,9 +83,8 @@ export function parseCsv(text: string, sep: string): string[][] {
 // Un export protégé contre l'injection de formules préfixe certaines cellules d'une apostrophe
 const unprotect = (v: string) => v.trim().replace(/^'(?=[=+\-@])/, '');
 
-function mapColumns(header: string[]): Record<ImportField, number> {
+function mapColumns(header: string[], taken = new Set<number>()): Record<ImportField, number> {
   const map = { lastName: -1, firstName: -1, email: -1, phone: -1, company: -1, type: -1 };
-  const taken = new Set<number>();
   for (const [field, keywords] of FIELD_KEYWORDS) {
     const idx = header.findIndex((h, i) => !taken.has(i) && keywords.some((k) => normalize(h).includes(k)));
     if (idx >= 0) { map[field] = idx; taken.add(idx); }
@@ -95,8 +99,28 @@ export function matchType(types: ParticipantType[], value: string): ParticipantT
   return types.find((t) => normalize(t.id).replace(/s$/, '') === v || normalize(t.label).replace(/s$/, '') === v);
 }
 
-export function previewImport(text: string, types: ParticipantType[], existingEmails: Iterable<string>): ImportPreview {
+const YES = new Set(['oui', 'o', 'x', 'yes', 'y', '1', 'vrai', 'true']);
+
+/** Réponse lue dans une cellule, convertie pour le champ ; null si vide ou invalide. */
+function readAnswer(field: CustomField, raw: string): { value: Answers[string] } | { invalid: true } | null {
+  if (!raw) return null;
+  let candidate: unknown = raw;
+  if (field.kind === 'checkbox') {
+    if (!YES.has(normalize(raw))) return normalize(raw) === 'non' || normalize(raw) === '0' ? null : { invalid: true };
+    candidate = true;
+  }
+  if (field.kind === 'choice') {
+    const option = field.options.find((o) => normalize(o) === normalize(raw));
+    if (!option) return { invalid: true };
+    candidate = option;
+  }
+  const r = checkAnswers([{ ...field, typeIds: [], required: false }], '', { [field.id]: candidate });
+  return r.error || r.answers[field.id] === undefined ? { invalid: true } : { value: r.answers[field.id]! };
+}
+
+export function previewImport(text: string, types: ParticipantType[], existingEmails: Iterable<string>, fields: CustomField[] = []): ImportPreview {
   const preview: ImportPreview = {
+    fieldColumns: [],
     columns: { lastName: null, firstName: null, email: null, phone: null, company: null, type: null },
     accepted: [], skipped: [], duplicates: [], warnings: [], error: null,
   };
@@ -106,7 +130,17 @@ export function previewImport(text: string, types: ParticipantType[], existingEm
 
   const rows = parseCsv(clean, detectSeparator(clean.split(/\r?\n/)[0] ?? ''));
   const header = rows[0] ?? [];
-  const cols = mapColumns(header);
+  // Questions d'abord, par leur libellé exact : « Nom du magasin » ne doit pas devenir la colonne « Nom »
+  const taken = new Set<number>();
+  const fieldCols: { field: CustomField; index: number }[] = [];
+  for (const field of fields) {
+    const index = header.findIndex((h, i) => !taken.has(i) && normalize(h) === normalize(field.label));
+    if (index < 0) continue;
+    taken.add(index);
+    fieldCols.push({ field, index });
+    preview.fieldColumns.push({ fieldId: field.id, label: field.label, header: header[index]!.trim() });
+  }
+  const cols = mapColumns(header, taken);
   if (cols.lastName < 0 && cols.firstName < 0) {
     preview.error = 'Colonne « Nom » introuvable : la première ligne doit contenir les en-têtes (Nom, Prénom, Email, Société, Type…).';
     return preview;
@@ -131,6 +165,7 @@ export function previewImport(text: string, types: ParticipantType[], existingEm
       phone: cell(r, cols.phone).slice(0, 40),
       company: cell(r, cols.company).replace(/\s+/g, ' ').slice(0, 120),
       typeId: defaultType?.id ?? '',
+      answers: {},
     };
 
     if (!row.lastName && !row.firstName) { preview.skipped.push({ line, reason: 'Nom manquant' }); return; }
@@ -145,6 +180,13 @@ export function previewImport(text: string, types: ParticipantType[], existingEm
       const t = matchType(types, rawType);
       if (t) row.typeId = t.id;
       else preview.warnings.push({ line, message: `Type « ${rawType} » inconnu : « ${defaultType?.label} » appliqué` });
+    }
+    for (const { field, index } of fieldCols) {
+      if (field.typeIds.length && !field.typeIds.includes(row.typeId)) continue; // question d'un autre type
+      const raw = cell(r, index);
+      const answer = readAnswer(field, raw);
+      if (answer && 'value' in answer) row.answers[field.id] = answer.value;
+      else if (answer) preview.warnings.push({ line, message: `« ${field.label} » : réponse « ${raw} » non reconnue, ignorée` });
     }
     preview.accepted.push(row);
   });
