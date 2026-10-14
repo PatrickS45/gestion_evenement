@@ -1,3 +1,4 @@
+import type { CustomField } from './fields';
 import { matchType, parseCsv, previewImport } from './csvImport';
 import { DEFAULT_TYPES } from './colors';
 
@@ -21,7 +22,7 @@ describe('previewImport', () => {
     const p = previewImport('Société;Prénom;Nom;E-mail;Type\nMaison Roy;Marc;Roy;MARC@roy.fr;Exposants', DEFAULT_TYPES, []);
     expect(p.error).toBeNull();
     expect(p.columns).toMatchObject({ company: 'Société', firstName: 'Prénom', lastName: 'Nom', email: 'E-mail', type: 'Type' });
-    expect(p.accepted).toEqual([{ line: 2, lastName: 'Roy', firstName: 'Marc', email: 'marc@roy.fr', phone: '', company: 'Maison Roy', typeId: 'exposant' }]);
+    expect(p.accepted).toEqual([{ line: 2, lastName: 'Roy', firstName: 'Marc', email: 'marc@roy.fr', phone: '', company: 'Maison Roy', typeId: 'exposant', answers: {} }]);
   });
 
   it('« Nom de la société » va à la société, pas au nom', () => {
@@ -63,5 +64,31 @@ describe('previewImport', () => {
   it('refuse un fichier sans en-tête reconnaissable', () => {
     expect(previewImport('Durand;durand@x.fr', DEFAULT_TYPES, []).error).toMatch(/Nom/);
     expect(previewImport('   ', DEFAULT_TYPES, []).error).toBe('Le fichier est vide.');
+  });
+});
+
+describe('import des réponses aux questions (F-33)', () => {
+  const fields: CustomField[] = [
+    { id: 'nommag', label: 'Nom du magasin', kind: 'text', options: [], required: false, typeIds: [] },
+    { id: 'pdv', label: 'Points de vente', kind: 'number', options: [], required: true, typeIds: ['magasin'] },
+    { id: 'region', label: 'Région', kind: 'choice', options: ['Centre', 'Île-de-France'], required: false, typeIds: [] },
+    { id: 'dej', label: 'Déjeuner', kind: 'checkbox', options: [], required: false, typeIds: [] },
+  ];
+
+  it('reconnaît les colonnes par le libellé exact de la question, avant les colonnes habituelles', () => {
+    const p = previewImport('Nom;Prénom;Nom du magasin;Type;Points de vente;Région;Déjeuner\nRoy;Marc;Roy & Fils;Magasin;12;ile-de-france;x', DEFAULT_TYPES, [], fields);
+    expect(p.columns.lastName).toBe('Nom');
+    expect(p.fieldColumns.map((c) => c.fieldId)).toEqual(['nommag', 'pdv', 'region', 'dej']);
+    expect(p.accepted[0]).toMatchObject({ lastName: 'Roy', answers: { nommag: 'Roy & Fils', pdv: 12, region: 'Île-de-France', dej: true } });
+    expect(p.warnings).toEqual([]);
+  });
+
+  it('ignore une réponse invalide en le signalant, et les questions d\'un autre type', () => {
+    const p = previewImport('Nom;Type;Points de vente;Région;Déjeuner\nA;Magasin;beaucoup;Mars;non\nB;Exposant;5;;', DEFAULT_TYPES, [], fields);
+    expect(p.accepted.map((r) => r.answers)).toEqual([{}, {}]);
+    expect(p.warnings.map((w) => [w.line, w.message])).toEqual([
+      [2, '« Points de vente » : réponse « beaucoup » non reconnue, ignorée'],
+      [2, '« Région » : réponse « Mars » non reconnue, ignorée'],
+    ]);
   });
 });
