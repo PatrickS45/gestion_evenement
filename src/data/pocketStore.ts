@@ -8,6 +8,7 @@ import { DEFAULT_THRESHOLDS } from '../domain/gauge';
 import { defaultPrivacy, normalizePrivacy, type AuditEntry, type ExportKind, type PrivacyPolicy } from '../domain/privacy';
 import type { EventReport } from '../domain/report';
 import { normalizeFields } from '../domain/fields';
+import { normalizeBranding } from '../domain/branding';
 import {
   compareNames, type Direction, type EventInfo, type Participant, type Passage, type Refusal, type ScanMethod,
 } from '../domain/model';
@@ -27,7 +28,7 @@ const toEvent = (r: RecordModel): EventInfo => ({
   id: r.id, orgId: r.org, name: r.name, startDate: r.startDate, endDate: r.endDate, venue: r.venue,
   capacity: r.capacity, thresholds: r.thresholds ?? DEFAULT_THRESHOLDS, types: r.types ?? DEFAULT_TYPES,
   registrationOpen: r.registrationOpen, createdAt: r.createdAt,
-  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null, accessCode: r.accessCode || null, requireApproval: !!r.requireApproval, fields: normalizeFields(r.fields),
+  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null, accessCode: r.accessCode || null, requireApproval: !!r.requireApproval, fields: normalizeFields(r.fields), branding: normalizeBranding(r.branding),
 });
 
 const toParticipant = (r: RecordModel): Participant => ({

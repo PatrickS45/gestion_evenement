@@ -4,6 +4,7 @@ import { navigate } from '../app/router';
 import type { AccessPage, RegistrationForm, RegistrationInfo } from '../data/store';
 import { QrImage, TypeBadge } from '../ui/components';
 import { PublicPrivacyNotice } from '../ui/privacy';
+import { BrandLogo, brandStyle } from '../ui/branding';
 import { FieldInput, type AnswerDraft } from '../ui/fields';
 import { fieldsFor } from '../domain/fields';
 
@@ -39,7 +40,7 @@ export function Register({ eventId }: { eventId: string }) {
 
   if (info === undefined) return <main className="public"><p className="public-card" role="status">Chargement…</p></main>;
   if (!info || !info.open) return (
-    <main className="public">
+    <main className="public" style={brandStyle(info?.branding)}>
       <div className="public-card stack">
         <h1 style={{ fontSize: 24 }}>Inscriptions fermées</h1>
         <p className="muted">{info ? `Les inscriptions à « ${info.eventName} » ne sont pas ouvertes.` : 'Ce lien d\'inscription n\'est pas valide.'}</p>
@@ -48,8 +49,9 @@ export function Register({ eventId }: { eventId: string }) {
   );
 
   return (
-    <main className="public">
+    <main className="public" style={brandStyle(info.branding)}>
       <form className="public-card stack" onSubmit={submit} noValidate>
+        <BrandLogo branding={info.branding} organizer={info.privacy.controller} />
         <div>
           <p className="muted" style={{ fontWeight: 600 }}>{info.eventName}</p>
           <h1 style={{ fontSize: 26 }}>Inscription</h1>
@@ -118,8 +120,9 @@ export function Access({ token }: { token: string }) {
   );
 
   return (
-    <main className="public">
+    <main className="public" style={brandStyle(page.branding)}>
       <div className="public-card stack" style={{ alignItems: 'center', textAlign: 'center' }}>
+        <BrandLogo branding={page.branding} organizer={page.privacy.controller} center />
         {justRegistered && (
           <p role="status" className="notice notice-ok" style={{ width: '100%' }}>
             {page.status === 'pending'

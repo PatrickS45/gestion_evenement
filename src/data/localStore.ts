@@ -5,6 +5,7 @@
 import { can, type Action, type Role } from '../domain/access';
 import { compareNames, type EventInfo, type Organization, type Participant, type Passage, type Refusal, type ScanMethod, type User } from '../domain/model';
 import { checkAnswers, normalizeFields } from '../domain/fields';
+import { NO_BRANDING, normalizeBranding } from '../domain/branding';
 import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncBatch, type SyncResult, type SyncStatus } from '../domain/offline';
 import { applyScan, decideScan } from '../domain/scan';
 import {
@@ -127,6 +128,7 @@ export class LocalStore implements EventStore {
         e.accessCode ??= null;
         e.requireApproval ??= false;
         e.fields ??= [];
+        e.branding ??= NO_BRANDING;
       }
       for (const p of Object.values(db.participants)) {
         p.status ??= 'accepted';
@@ -398,7 +400,7 @@ export class LocalStore implements EventStore {
         id: newId(), orgId, name, startDate: input.startDate, endDate: input.endDate,
         venue: (input.venue ?? '').trim(), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
         types: DEFAULT_TYPES, registrationOpen: false, createdAt: this.nowIso(),
-        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null, accessCode: null, requireApproval: false, fields: [],
+        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null, accessCode: null, requireApproval: false, fields: [], branding: NO_BRANDING,
       };
       db.events[event.id] = event;
       return event;
@@ -412,6 +414,7 @@ export class LocalStore implements EventStore {
         ...current, ...patch,
         privacy: patch.privacy ? normalizePrivacy(patch.privacy, current.privacy) : current.privacy,
         fields: patch.fields ? normalizeFields(patch.fields) : current.fields,
+        branding: patch.branding ? normalizeBranding(patch.branding, current.branding) : current.branding,
       };
       if (!Number.isInteger(event.capacity) || event.capacity < 0) throw new StoreError('invalid', 'Jauge invalide');
       if (event.registrationOpen && current.purgedAt) throw new StoreError('closed', 'Les données de cet événement ont été purgées');
@@ -428,7 +431,7 @@ export class LocalStore implements EventStore {
     const created = await this.createEvent(source.orgId, {
       name, startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity,
     });
-    return this.updateEvent(created.id, { types: source.types, thresholds: source.thresholds, privacy: source.privacy, fields: source.fields });
+    return this.updateEvent(created.id, { types: source.types, thresholds: source.thresholds, privacy: source.privacy, fields: source.fields, branding: source.branding });
   }
 
   async deleteEvent(id: string) {
@@ -617,7 +620,7 @@ export class LocalStore implements EventStore {
 
   async getRegistrationInfo(eventId: string): Promise<RegistrationInfo | null> {
     const e = this.read().events[eventId];
-    return e ? { eventName: e.name, types: e.types, open: e.registrationOpen && !e.purgedAt, privacy: publicPrivacy(e), fields: e.fields } : null;
+    return e ? { eventName: e.name, types: e.types, open: e.registrationOpen && !e.purgedAt, privacy: publicPrivacy(e), fields: e.fields, branding: e.branding } : null;
   }
 
   async register(eventId: string, form: RegistrationForm) {
@@ -650,7 +653,7 @@ export class LocalStore implements EventStore {
       type: e.types.find((t) => t.id === p.typeId) ?? null, entryCount: p.entryCount,
       // Pas de QR code tant que l'inscription attend sa validation (F-37)
       token: p.status === 'pending' ? '' : p.token, status: p.status,
-      privacy: publicPrivacy(e),
+      privacy: publicPrivacy(e), branding: e.branding,
     };
   }
 

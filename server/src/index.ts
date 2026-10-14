@@ -10,6 +10,7 @@ import {
   type AuditAction, type AuditEntry, type ExportKind, type PrivacyPolicy,
 } from '../../src/domain/privacy';
 import { checkAnswers, normalizeFields } from '../../src/domain/fields';
+import { normalizeBranding } from '../../src/domain/branding';
 import { anonymousReport, type EventReport, type ReportReason } from '../../src/domain/report';
 import { parisDay } from '../../src/domain/time';
 import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncResult, type SyncStatus } from '../../src/domain/offline';
@@ -87,6 +88,7 @@ function toEvent(r: PbRecord): EventInfo {
     accessCode: r.getString('accessCode') || null,
     requireApproval: r.getBool('requireApproval'),
     fields: normalizeFields(parseJson(r, 'fields', [])),
+    branding: normalizeBranding(parseJson(r, 'branding', {})),
   };
 }
 
@@ -360,6 +362,7 @@ function saveEvent(app: PbApp, r: PbRecord, ev: EventInfo) {
   r.set('privacy', ev.privacy);
   r.set('requireApproval', ev.requireApproval);
   r.set('fields', ev.fields);
+  r.set('branding', ev.branding);
   r.set('purgedAt', ev.purgedAt ?? '');
   app.save(r);
   return toEvent(r);
@@ -371,7 +374,7 @@ function newEvent(app: PbApp, orgId: string, input: NewEvent): EventInfo {
     id: '', orgId, name: str(input.name), startDate: str(input.startDate), endDate: str(input.endDate),
     venue: str(input.venue), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
     types: DEFAULT_TYPES, registrationOpen: false, createdAt: nowIso(),
-    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null, accessCode: null, requireApproval: false, fields: [],
+    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null, accessCode: null, requireApproval: false, fields: [], branding: { color: null, logo: null },
   });
 }
 
@@ -407,6 +410,7 @@ export function updateEvent(e: PbRequestEvent) {
   if (patch.privacy !== undefined) next.privacy = normalizePrivacy(patch.privacy, current.privacy);
   if (patch.requireApproval !== undefined) next.requireApproval = !!patch.requireApproval;
   if (patch.fields !== undefined) next.fields = normalizeFields(patch.fields);
+  if (patch.branding !== undefined) next.branding = normalizeBranding(patch.branding, current.branding);
   if (next.registrationOpen && current.purgedAt) fail('closed', 'Les données de cet événement ont été purgées');
   if (!next.types.length) fail('invalid', 'Il faut au moins un type de participant');
   e.json(200, saveEvent($app, event, next));
@@ -420,7 +424,7 @@ export function duplicateEvent(e: PbRequestEvent) {
     const created = newEvent(app, source.orgId, {
       name: str(body(e).name), startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity,
     });
-    copy = saveEvent(app, app.findRecordById('events', created.id), { ...created, types: source.types, thresholds: source.thresholds, privacy: source.privacy, fields: source.fields });
+    copy = saveEvent(app, app.findRecordById('events', created.id), { ...created, types: source.types, thresholds: source.thresholds, privacy: source.privacy, fields: source.fields, branding: source.branding });
   });
   e.json(201, copy);
 }
@@ -863,7 +867,7 @@ export function registrationInfo(e: PbRequestEvent) {
   const r = find($app, 'events', e.request.pathValue('id'));
   if (!r) return fail('not-found', 'Événement introuvable');
   const ev = toEvent(r);
-  const info: RegistrationInfo = { eventName: ev.name, types: ev.types, open: ev.registrationOpen && !ev.purgedAt, privacy: publicPrivacy(ev), fields: ev.fields };
+  const info: RegistrationInfo = { eventName: ev.name, types: ev.types, open: ev.registrationOpen && !ev.purgedAt, privacy: publicPrivacy(ev), fields: ev.fields, branding: ev.branding };
   e.json(200, info);
 }
 
@@ -906,7 +910,7 @@ export function accessPage(e: PbRequestEvent) {
     type: event.types.find((t) => t.id === p.typeId) ?? null, entryCount: p.entryCount,
     // Pas de QR code tant que l'inscription attend sa validation (F-37)
     token: p.status === 'pending' ? '' : p.token, status: p.status,
-    privacy: publicPrivacy(event),
+    privacy: publicPrivacy(event), branding: event.branding,
   };
   e.json(200, page);
 }

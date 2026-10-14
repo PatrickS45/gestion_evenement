@@ -5,6 +5,7 @@ import type { Role } from '../domain/access';
 import type {
   Direction, EventInfo, Participant, ParticipantStatus, ParticipantSource, ParticipantType, Passage, Refusal, ScanMethod, User,
 } from '../domain/model';
+import type { Branding } from '../domain/branding';
 import type { CustomField } from '../domain/fields';
 import type { SyncBatch, SyncResult } from '../domain/offline';
 import type { AuditEntry, ExportKind, PrivacyPolicy } from '../domain/privacy';
@@ -58,8 +59,9 @@ export interface NewEvent {
   capacity?: number;
 }
 
-export type EventPatch = Partial<Omit<EventInfo, 'id' | 'orgId' | 'createdAt' | 'privacy' | 'purgedAt' | 'accessCode'>> & {
+export type EventPatch = Partial<Omit<EventInfo, 'id' | 'orgId' | 'createdAt' | 'privacy' | 'purgedAt' | 'accessCode' | 'branding'>> & {
   privacy?: Partial<PrivacyPolicy>;
+  branding?: Partial<Branding>;
 };
 
 /** Politique de confidentialité montrée au public, avec la date de purge qui en découle (NF-32). */
@@ -117,6 +119,7 @@ export interface RegistrationInfo {
   privacy: PublicPrivacy;
   /** Champs personnalisés, à filtrer selon le type choisi (F-33). */
   fields: CustomField[];
+  branding: Branding;
 }
 
 /** Ce que voit un participant sur sa page d'accès (F-40) : ses seules données. */
@@ -134,6 +137,7 @@ export interface AccessPage {
   entryCount: number;
   status: ParticipantStatus;
   privacy: PublicPrivacy;
+  branding: Branding;
 }
 
 export interface RegistrationForm {

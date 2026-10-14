@@ -402,6 +402,19 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
       expect((await a.duplicateEvent(event.id, 'Copie')).fields.map((f) => f.id)).toEqual(['pdv', 'region']);
     });
 
+    it("couleur et logo de l'organisateur sur le formulaire et la page participant (F-14)", async () => {
+      const { a, event } = await setup();
+      const logo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==';
+      const updated = await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' }, branding: { color: '#FFD400', logo } });
+      expect(updated.branding).toEqual({ color: '#ffd400', logo });
+      expect((await a.getRegistrationInfo(event.id))!.branding).toEqual({ color: '#ffd400', logo });
+      const { token } = await a.register(event.id, form);
+      expect((await a.getAccessPage(token))!.branding.logo).toBe(logo);
+      // Couleur seule modifiée : le logo reste ; logo vectoriel refusé
+      expect((await a.updateEvent(event.id, { branding: { color: '#112233' } })).branding).toEqual({ color: '#112233', logo });
+      expect((await a.updateEvent(event.id, { branding: { logo: 'data:image/svg+xml;base64,PHN2Zz4=' } })).branding.logo).toBeNull();
+    });
+
     it('refuse une inscription dont le champ piège est rempli (F-36)', async () => {
       const { a, event } = await setup();
       await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });
