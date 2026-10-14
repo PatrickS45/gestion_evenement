@@ -3,6 +3,7 @@ import type { EventSnapshot } from '../data/store';
 import { replayPassages } from '../domain/attendance';
 import { accepted, fullName, type Participant, type ScanMethod } from '../domain/model';
 import { controlStats, dailyFlows } from '../domain/stats';
+import { answerText } from '../domain/fields';
 import { floorQuarter, parisDay, parisTime, QUARTER_MS, toMs } from '../domain/time';
 import type { Cell, Sheet } from './spreadsheet';
 
@@ -143,15 +144,17 @@ export function controlSheet(s: EventSnapshot): Sheet {
 }
 
 export function participantsSheet(s: EventSnapshot): Sheet {
+  const fields = s.event.fields;
   return {
     name: 'Participants',
-    widths: [20, 18, 14, 26, 30, 16, 14, 18, 10, 18],
+    widths: [20, 18, 14, 26, 30, 16, 14, 18, 10, 18, ...fields.map(() => 22)],
     rows: [
-      [H('Nom'), H('Prénom'), H('Type'), H('Société'), H('Email'), H('Téléphone'), H('Statut'), H('Première entrée'), H('Entrées'), H('Origine')],
+      [H('Nom'), H('Prénom'), H('Type'), H('Société'), H('Email'), H('Téléphone'), H('Statut'), H('Première entrée'), H('Entrées'), H('Origine'), ...fields.map((f) => H(f.label))],
       ...s.participants.map((p) => [
         p.lastName, p.firstName, typeLabel(s, p.typeId), p.company, p.email, p.phone, status(p),
         dateTime(p.firstEntryAt), p.entryCount,
         p.source === 'form' ? 'Formulaire' : p.source === 'import' ? 'Import' : 'Saisie',
+        ...fields.map((f) => { const v = p.answers[f.id]; return typeof v === 'number' ? v : answerText(f, v); }),
       ]),
     ],
   };

@@ -1,4 +1,5 @@
 // Modèle métier (cahier des charges, section 7). Aucune dépendance technique.
+import type { Answers, CustomField } from './fields';
 import type { PrivacyPolicy } from './privacy';
 
 /** Date et heure au format ISO 8601. */
@@ -66,6 +67,8 @@ export interface EventInfo {
   accessCode: string | null;
   /** Validation manuelle : les inscriptions du formulaire attendent l'accord d'un administrateur (F-37). */
   requireApproval: boolean;
+  /** Champs personnalisés du formulaire (F-33). */
+  fields: CustomField[];
 }
 
 export interface Participant {
@@ -83,6 +86,8 @@ export interface Participant {
   source: ParticipantSource;
   /** En attente : pas de QR code délivré, refusé au scan, hors des statistiques (F-37). */
   status: ParticipantStatus;
+  /** Réponses aux champs personnalisés, par identifiant de champ (F-33). */
+  answers: Answers;
   consentAt: Iso | null;
   createdAt: Iso;
   /** Présence actuelle : vrai si le dernier passage est une entrée (RG-01). */

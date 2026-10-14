@@ -7,6 +7,7 @@ import { DEFAULT_TYPES } from '../domain/colors';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
 import { defaultPrivacy, normalizePrivacy, type AuditEntry, type ExportKind, type PrivacyPolicy } from '../domain/privacy';
 import type { EventReport } from '../domain/report';
+import { normalizeFields } from '../domain/fields';
 import {
   compareNames, type Direction, type EventInfo, type Participant, type Passage, type Refusal, type ScanMethod,
 } from '../domain/model';
@@ -26,13 +27,13 @@ const toEvent = (r: RecordModel): EventInfo => ({
   id: r.id, orgId: r.org, name: r.name, startDate: r.startDate, endDate: r.endDate, venue: r.venue,
   capacity: r.capacity, thresholds: r.thresholds ?? DEFAULT_THRESHOLDS, types: r.types ?? DEFAULT_TYPES,
   registrationOpen: r.registrationOpen, createdAt: r.createdAt,
-  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null, accessCode: r.accessCode || null, requireApproval: !!r.requireApproval,
+  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null, accessCode: r.accessCode || null, requireApproval: !!r.requireApproval, fields: normalizeFields(r.fields),
 });
 
 const toParticipant = (r: RecordModel): Participant => ({
   id: r.id, eventId: r.event, firstName: r.firstName, lastName: r.lastName, email: r.email, phone: r.phone,
   company: r.company, typeId: r.typeId, token: r.token, tokenRevoked: r.tokenRevoked, source: r.source,
-  status: r.status === 'pending' ? 'pending' : 'accepted',
+  status: r.status === 'pending' ? 'pending' : 'accepted', answers: r.answers ?? {},
   consentAt: r.consentAt || null, createdAt: r.createdAt, inside: r.inside, entryCount: r.entryCount,
   firstEntryAt: r.firstEntryAt || null, lastMoveAt: r.lastMoveAt || null,
 });

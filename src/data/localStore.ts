@@ -4,6 +4,7 @@
 // Les droits y sont vérifiés comme ils le seront par le serveur (NF-20).
 import { can, type Action, type Role } from '../domain/access';
 import { compareNames, type EventInfo, type Organization, type Participant, type Passage, type Refusal, type ScanMethod, type User } from '../domain/model';
+import { checkAnswers, normalizeFields } from '../domain/fields';
 import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncBatch, type SyncResult, type SyncStatus } from '../domain/offline';
 import { applyScan, decideScan } from '../domain/scan';
 import {
@@ -125,9 +126,11 @@ export class LocalStore implements EventStore {
         e.purgedAt ??= null;
         e.accessCode ??= null;
         e.requireApproval ??= false;
+        e.fields ??= [];
       }
       for (const p of Object.values(db.participants)) {
         p.status ??= 'accepted';
+        p.answers ??= {};
       }
       return db;
     }
@@ -223,7 +226,7 @@ export class LocalStore implements EventStore {
     return !!e && Object.values(db.participants).some((p) => p.eventId === eventId && p.id !== exceptId && p.email === e);
   }
 
-  private buildParticipant(eventId: string, input: NewParticipant, status: Participant['status'] = 'accepted'): Participant {
+  private buildParticipant(eventId: string, input: NewParticipant, status: Participant['status'] = 'accepted', answers: Participant['answers'] = {}): Participant {
     return {
       id: newId(), eventId,
       firstName: input.firstName.trim().slice(0, 100),
@@ -233,7 +236,7 @@ export class LocalStore implements EventStore {
       company: (input.company ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
       typeId: input.typeId,
       token: newToken(), tokenRevoked: false,
-      source: input.source, status, consentAt: input.consentAt ?? null, createdAt: this.nowIso(),
+      source: input.source, status, answers, consentAt: input.consentAt ?? null, createdAt: this.nowIso(),
       inside: false, entryCount: 0, firstEntryAt: null, lastMoveAt: null,
     };
   }
@@ -395,7 +398,7 @@ export class LocalStore implements EventStore {
         id: newId(), orgId, name, startDate: input.startDate, endDate: input.endDate,
         venue: (input.venue ?? '').trim(), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
         types: DEFAULT_TYPES, registrationOpen: false, createdAt: this.nowIso(),
-        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null, accessCode: null, requireApproval: false,
+        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null, accessCode: null, requireApproval: false, fields: [],
       };
       db.events[event.id] = event;
       return event;
@@ -405,7 +408,11 @@ export class LocalStore implements EventStore {
   async updateEvent(id: string, patch: EventPatch) {
     return this.transaction([id], (db) => {
       const current = this.requireEvent(db, id, 'event.edit');
-      const event: EventInfo = { ...current, ...patch, privacy: patch.privacy ? normalizePrivacy(patch.privacy, current.privacy) : current.privacy };
+      const event: EventInfo = {
+        ...current, ...patch,
+        privacy: patch.privacy ? normalizePrivacy(patch.privacy, current.privacy) : current.privacy,
+        fields: patch.fields ? normalizeFields(patch.fields) : current.fields,
+      };
       if (!Number.isInteger(event.capacity) || event.capacity < 0) throw new StoreError('invalid', 'Jauge invalide');
       if (event.registrationOpen && current.purgedAt) throw new StoreError('closed', 'Les données de cet événement ont été purgées');
       if (event.registrationOpen && !privacyComplete(event.privacy)) {
@@ -421,7 +428,7 @@ export class LocalStore implements EventStore {
     const created = await this.createEvent(source.orgId, {
       name, startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity,
     });
-    return this.updateEvent(created.id, { types: source.types, thresholds: source.thresholds, privacy: source.privacy });
+    return this.updateEvent(created.id, { types: source.types, thresholds: source.thresholds, privacy: source.privacy, fields: source.fields });
   }
 
   async deleteEvent(id: string) {
@@ -449,7 +456,9 @@ export class LocalStore implements EventStore {
         if (!input.firstName.trim() && !input.lastName.trim()) throw new StoreError('invalid', 'Nom manquant');
         if (input.email && !EMAIL.test(input.email.trim())) throw new StoreError('invalid', `Email invalide : ${input.email}`);
         if (this.emailTaken(db, eventId, input.email)) throw new StoreError('duplicate', `${input.email} est déjà inscrit`);
-        const p = this.buildParticipant(eventId, { ...input, typeId: typeIds.has(input.typeId) ? input.typeId : event.types[0]!.id });
+        const typeId = typeIds.has(input.typeId) ? input.typeId : event.types[0]!.id;
+        const { answers } = checkAnswers(event.fields, typeId, input.answers, { required: false });
+        const p = this.buildParticipant(eventId, { ...input, typeId }, 'accepted', answers);
         db.participants[p.id] = p;
         return p;
       });
@@ -463,7 +472,13 @@ export class LocalStore implements EventStore {
     const eventId = this.requireParticipant(this.read(), id, 'participants.manage').eventId;
     return this.transaction([eventId], (db) => {
       const current = this.requireParticipant(db, id, 'participants.manage');
-      const next = { ...current, ...patch };
+      const { answers: rawAnswers, ...fields } = patch;
+      const next: Participant = { ...current, ...fields };
+      if (rawAnswers !== undefined || patch.typeId !== undefined) {
+        const r = checkAnswers(db.events[eventId]!.fields, next.typeId, rawAnswers ?? current.answers, { required: false });
+        if (r.error) throw new StoreError('invalid', r.error);
+        next.answers = r.answers;
+      }
       if (patch.email !== undefined) {
         next.email = normEmail(patch.email);
         if (next.email && !EMAIL.test(next.email)) throw new StoreError('invalid', 'Email invalide');
@@ -602,7 +617,7 @@ export class LocalStore implements EventStore {
 
   async getRegistrationInfo(eventId: string): Promise<RegistrationInfo | null> {
     const e = this.read().events[eventId];
-    return e ? { eventName: e.name, types: e.types, open: e.registrationOpen && !e.purgedAt, privacy: publicPrivacy(e) } : null;
+    return e ? { eventName: e.name, types: e.types, open: e.registrationOpen && !e.purgedAt, privacy: publicPrivacy(e), fields: e.fields } : null;
   }
 
   async register(eventId: string, form: RegistrationForm) {
@@ -615,8 +630,10 @@ export class LocalStore implements EventStore {
       if (!event || !event.registrationOpen || event.purgedAt) throw new StoreError('closed', 'Les inscriptions sont fermées');
       if (!event.types.some((t) => t.id === form.typeId)) throw new StoreError('invalid', 'Profil invalide');
       if (this.emailTaken(db, eventId, form.email)) throw new StoreError('duplicate', 'Cette adresse email est déjà inscrite');
-      const { website: _trap, ...fields } = form;
-      const p = this.buildParticipant(eventId, { ...fields, source: 'form', consentAt: this.nowIso() }, event.requireApproval ? 'pending' : 'accepted');
+      const { website: _trap, answers: rawAnswers, ...fields } = form;
+      const { answers, error } = checkAnswers(event.fields, form.typeId, rawAnswers);
+      if (error) throw new StoreError('invalid', error);
+      const p = this.buildParticipant(eventId, { ...fields, source: 'form', consentAt: this.nowIso() }, event.requireApproval ? 'pending' : 'accepted', answers);
       db.participants[p.id] = p;
       return { token: p.token };
     });

@@ -3,6 +3,7 @@
 // Module exécuté aussi par le serveur (hooks PocketBase, sans Intl).
 import { quarterCurve, replayPassages } from './attendance';
 import { accepted, type EventInfo, type Iso, type Participant, type ParticipantType, type Passage, type Refusal } from './model';
+import { fieldStats, type FieldStats } from './fields';
 import { dailyFlows } from './stats';
 
 export type ReportReason = 'purge' | 'deletion';
@@ -47,6 +48,8 @@ export interface EventReport {
   days: ReportDay[];
   refusals: number;
   offlineDuplicates: number;
+  /** Répartition des réponses aux champs personnalisés, sans les textes libres (F-73). */
+  fields?: FieldStats[];
   generatedAt: Iso;
   reason: ReportReason;
 }
@@ -103,6 +106,7 @@ export function anonymousReport(
     })),
     refusals: refusals.length,
     offlineDuplicates: passages.filter((p) => p.offlineDuplicate).length,
+    fields: fieldStats(event.fields ?? [], participants.map((p) => ({ typeId: p.typeId, answers: p.answers ?? {} }))),
     generatedAt,
     reason,
   };

@@ -118,6 +118,26 @@ export function ReportView({ report, headingLevel = 2 }: { report: EventReport; 
         );
       })}
 
+      {report.fields && report.fields.length > 0 && (
+        <section className="card stack" aria-labelledby={id('fields')}>
+          <Sub id={id('fields')} style={{ marginBottom: 0 }}>Réponses aux questions du formulaire</Sub>
+          {report.fields.map((f) => (
+            <div key={f.fieldId} className="stack" style={{ gap: 4 }}>
+              <p><strong>{f.label}</strong> <span className="small">· {f.answered} réponse{f.answered > 1 ? 's' : ''} sur {f.asked} personne{f.asked > 1 ? 's' : ''} concernée{f.asked > 1 ? 's' : ''}</span></p>
+              {f.counts && (
+                <ul className="small" style={{ margin: 0 }}>
+                  {f.counts.map((c) => <li key={c.value}>{c.value} : {c.count} ({pct(c.count, f.asked)})</li>)}
+                </ul>
+              )}
+              {f.numbers && (
+                <p className="small">Total {f.numbers.sum.toLocaleString('fr-FR')} · moyenne {f.numbers.average.toLocaleString('fr-FR')} · de {f.numbers.min.toLocaleString('fr-FR')} à {f.numbers.max.toLocaleString('fr-FR')}</p>
+              )}
+              {f.kind === 'text' && <p className="small">Réponses libres : non reprises dans le bilan.</p>}
+            </div>
+          ))}
+        </section>
+      )}
+
       <p className="small">
         Document statistique sans donnée personnelle
         {report.refusals > 0 && <> · {report.refusals} tentative{report.refusals > 1 ? 's' : ''} refusée{report.refusals > 1 ? 's' : ''}</>}

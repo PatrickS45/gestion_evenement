@@ -373,6 +373,35 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
       expect(lea.status).toBe('accepted');
     });
 
+    it('champs personnalisés : demandés selon le type, obligatoires exigés, réponses enregistrées (F-33)', async () => {
+      const { a, event } = await setup();
+      const updated = await a.updateEvent(event.id, {
+        registrationOpen: true, privacy: { contact: 'dpo@salon.fr' },
+        fields: [
+          { id: 'pdv', label: 'Nombre de points de vente', kind: 'number', options: [], required: true, typeIds: ['magasin'] },
+          { id: 'region', label: 'Région', kind: 'choice', options: ['Centre', 'Autre'], required: false, typeIds: [] },
+          { id: 'vide', label: '', kind: 'text', options: [], required: false, typeIds: [] }, // invalide : écarté
+        ],
+      });
+      expect(updated.fields.map((f) => f.id)).toEqual(['pdv', 'region']);
+      expect((await a.getRegistrationInfo(event.id))!.fields).toHaveLength(2);
+
+      const magasin = { ...form, typeId: 'magasin', email: 'mag@x.fr' };
+      await expect(a.register(event.id, magasin)).rejects.toMatchObject({ code: 'invalid', message: 'Renseignez « Nombre de points de vente »' });
+      await a.register(event.id, { ...magasin, answers: { pdv: '3', region: 'Centre', inconnu: 'x' } });
+      await a.register(event.id, { ...form, answers: { pdv: 99, region: 'Autre' } }); // exposant : pdv ignoré
+      const snap = (await snapshotOf(a, event.id))!;
+      expect(snap.participants.find((p) => p.email === 'mag@x.fr')!.answers).toEqual({ pdv: 3, region: 'Centre' });
+      expect(snap.participants.find((p) => p.email === 'sophie@x.fr')!.answers).toEqual({ region: 'Autre' });
+
+      // L'équipe peut compléter plus tard : les champs obligatoires ne sont pas exigés à l'ajout
+      const [added] = await a.addParticipants(event.id, [{ firstName: 'Z', lastName: 'Imp', email: 'imp@x.fr', typeId: 'magasin', source: 'import', answers: { region: 'Centre' } }]);
+      expect(added!.answers).toEqual({ region: 'Centre' });
+      expect((await a.updateParticipant(added!.id, { answers: { pdv: 7, region: 'Centre' } })).answers).toEqual({ pdv: 7, region: 'Centre' });
+      await expect(a.updateParticipant(added!.id, { answers: { pdv: 'beaucoup' } })).rejects.toMatchObject({ code: 'invalid' });
+      expect((await a.duplicateEvent(event.id, 'Copie')).fields.map((f) => f.id)).toEqual(['pdv', 'region']);
+    });
+
     it('refuse une inscription dont le champ piège est rempli (F-36)', async () => {
       const { a, event } = await setup();
       await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });

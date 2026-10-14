@@ -10,6 +10,7 @@ import { privacyComplete, purgeDay, type PrivacyPolicy } from '../domain/privacy
 import { parisDay } from '../domain/time';
 import { QrImage, TypeBadge } from '../ui/components';
 import { longDay, PrivacyFields } from '../ui/privacy';
+import { FieldsEditor } from '../ui/fields';
 
 export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
@@ -194,6 +195,13 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
         {error && <p role="alert" className="error">{error}</p>}
         <div><button className="btn" type="submit">Enregistrer</button></div>
       </form>
+
+      <section className="card stack" aria-labelledby="fields-title">
+        <h2 id="fields-title" style={{ marginBottom: 0 }}>Questions du formulaire</h2>
+        <p className="muted">Questions supplémentaires posées à l'inscription, éventuellement à certains types seulement. Les réponses alimentent les statistiques.</p>
+        <FieldsEditor key={event.id} fields={event.fields} types={event.types}
+          onSave={async (fields) => { await store.updateEvent(event.id, { fields }); notify('Questions enregistrées'); }} />
+      </section>
 
       <section className="card stack" aria-labelledby="code-title">
         <h2 id="code-title" style={{ marginBottom: 0 }}>Code d'accès des agents</h2>

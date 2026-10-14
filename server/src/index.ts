@@ -9,6 +9,7 @@ import {
   defaultPrivacy, EXPORT_KINDS, EXPORT_LABELS, normalizePrivacy, privacyComplete, purgeDay, retentionState,
   type AuditAction, type AuditEntry, type ExportKind, type PrivacyPolicy,
 } from '../../src/domain/privacy';
+import { checkAnswers, normalizeFields } from '../../src/domain/fields';
 import { anonymousReport, type EventReport, type ReportReason } from '../../src/domain/report';
 import { parisDay } from '../../src/domain/time';
 import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncResult, type SyncStatus } from '../../src/domain/offline';
@@ -85,6 +86,7 @@ function toEvent(r: PbRecord): EventInfo {
     purgedAt: r.getString('purgedAt') || null,
     accessCode: r.getString('accessCode') || null,
     requireApproval: r.getBool('requireApproval'),
+    fields: normalizeFields(parseJson(r, 'fields', [])),
   };
 }
 
@@ -104,6 +106,7 @@ function toParticipant(r: PbRecord): Participant {
     token: r.getString('token'), tokenRevoked: r.getBool('tokenRevoked'),
     source: r.getString('source') as Participant['source'],
     status: r.getString('status') === 'pending' ? 'pending' : 'accepted',
+    answers: parseJson(r, 'answers', {}),
     consentAt: r.getString('consentAt') || null, createdAt: r.getString('createdAt'),
     inside: r.getBool('inside'), entryCount: r.getInt('entryCount'),
     firstEntryAt: r.getString('firstEntryAt') || null, lastMoveAt: r.getString('lastMoveAt') || null,
@@ -116,6 +119,7 @@ function writeParticipant(r: PbRecord, p: Participant) {
   for (const k of ['firstName', 'lastName', 'email', 'phone', 'company', 'typeId', 'token', 'source', 'createdAt'] as const) r.set(k, p[k]);
   r.set('tokenRevoked', p.tokenRevoked);
   r.set('status', p.status);
+  r.set('answers', p.answers);
   r.set('consentAt', p.consentAt ?? '');
   r.set('inside', p.inside);
   r.set('entryCount', p.entryCount);
@@ -355,6 +359,7 @@ function saveEvent(app: PbApp, r: PbRecord, ev: EventInfo) {
   r.set('createdAt', ev.createdAt);
   r.set('privacy', ev.privacy);
   r.set('requireApproval', ev.requireApproval);
+  r.set('fields', ev.fields);
   r.set('purgedAt', ev.purgedAt ?? '');
   app.save(r);
   return toEvent(r);
@@ -366,7 +371,7 @@ function newEvent(app: PbApp, orgId: string, input: NewEvent): EventInfo {
     id: '', orgId, name: str(input.name), startDate: str(input.startDate), endDate: str(input.endDate),
     venue: str(input.venue), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
     types: DEFAULT_TYPES, registrationOpen: false, createdAt: nowIso(),
-    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null, accessCode: null, requireApproval: false,
+    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null, accessCode: null, requireApproval: false, fields: [],
   });
 }
 
@@ -401,6 +406,7 @@ export function updateEvent(e: PbRequestEvent) {
   if (patch.registrationOpen !== undefined) next.registrationOpen = !!patch.registrationOpen;
   if (patch.privacy !== undefined) next.privacy = normalizePrivacy(patch.privacy, current.privacy);
   if (patch.requireApproval !== undefined) next.requireApproval = !!patch.requireApproval;
+  if (patch.fields !== undefined) next.fields = normalizeFields(patch.fields);
   if (next.registrationOpen && current.purgedAt) fail('closed', 'Les données de cet événement ont été purgées');
   if (!next.types.length) fail('invalid', 'Il faut au moins un type de participant');
   e.json(200, saveEvent($app, event, next));
@@ -414,7 +420,7 @@ export function duplicateEvent(e: PbRequestEvent) {
     const created = newEvent(app, source.orgId, {
       name: str(body(e).name), startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity,
     });
-    copy = saveEvent(app, app.findRecordById('events', created.id), { ...created, types: source.types, thresholds: source.thresholds, privacy: source.privacy });
+    copy = saveEvent(app, app.findRecordById('events', created.id), { ...created, types: source.types, thresholds: source.thresholds, privacy: source.privacy, fields: source.fields });
   });
   e.json(201, copy);
 }
@@ -433,14 +439,14 @@ export function deleteEvent(e: PbRequestEvent) {
 
 // ─── Participants (F-20 à F-26) ──────────────────────────────────────
 
-function buildParticipant(eventId: string, input: NewParticipant, status: Participant['status'] = 'accepted'): Participant {
+function buildParticipant(eventId: string, input: NewParticipant, status: Participant['status'] = 'accepted', answers: Participant['answers'] = {}): Participant {
   return {
     id: '', eventId,
     firstName: clip(input.firstName, 100), lastName: clip(input.lastName, 100),
     email: normEmail(input.email).slice(0, 320), phone: clip(input.phone, 40),
     company: str(input.company).replace(/\s+/g, ' ').trim().slice(0, 120),
     typeId: str(input.typeId), token: newToken(), tokenRevoked: false,
-    source: input.source, status, consentAt: input.consentAt ?? null, createdAt: nowIso(),
+    source: input.source, status, answers, consentAt: input.consentAt ?? null, createdAt: nowIso(),
     inside: false, entryCount: 0, firstEntryAt: null, lastMoveAt: null,
   };
 }
@@ -459,7 +465,7 @@ export function addParticipants(e: PbRequestEvent) {
   $app.runInTransaction((app) => {
     const { event, user } = requireEvent(app, e, eventId, 'participants.manage');
     requireNotPurged(event);
-    const types = toEvent(event).types;
+    const { types, fields } = toEvent(event);
     for (const input of list) {
       if (!str(input.firstName).trim() && !str(input.lastName).trim()) fail('invalid', 'Nom manquant');
       const email = normEmail(input.email);
@@ -467,7 +473,8 @@ export function addParticipants(e: PbRequestEvent) {
       if (emailTaken(app, eventId, email)) fail('duplicate', `${str(input.email)} est déjà inscrit`);
       const typeId = types.some((t) => t.id === input.typeId) ? input.typeId : types[0]!.id;
       const source = (['manual', 'import', 'form'] as const).indexOf(input.source) >= 0 ? input.source : 'manual';
-      added.push(insertParticipant(app, buildParticipant(eventId, { ...input, typeId, source })));
+      const { answers } = checkAnswers(fields, typeId, input.answers, { required: false });
+      added.push(insertParticipant(app, buildParticipant(eventId, { ...input, typeId, source }, 'accepted', answers)));
     }
     const imported = added.filter((p) => p.source === 'import').length;
     if (imported) audit(app, toEvent(event), user, 'import', imported); // RG-09
@@ -483,6 +490,12 @@ export function updateParticipant(e: PbRequestEvent) {
     const next = toParticipant(participant);
     for (const k of ['firstName', 'lastName', 'phone', 'company', 'typeId'] as const) {
       if (patch[k] !== undefined) next[k] = clip(patch[k], k === 'company' ? 120 : 100);
+    }
+    if (patch.answers !== undefined || patch.typeId !== undefined) {
+      const ev = app.findRecordById('events', next.eventId);
+      const r = checkAnswers(toEvent(ev).fields, next.typeId, patch.answers ?? next.answers, { required: false });
+      if (r.error) fail('invalid', r.error);
+      next.answers = r.answers;
     }
     if (patch.email !== undefined) {
       next.email = normEmail(patch.email);
@@ -850,7 +863,7 @@ export function registrationInfo(e: PbRequestEvent) {
   const r = find($app, 'events', e.request.pathValue('id'));
   if (!r) return fail('not-found', 'Événement introuvable');
   const ev = toEvent(r);
-  const info: RegistrationInfo = { eventName: ev.name, types: ev.types, open: ev.registrationOpen && !ev.purgedAt, privacy: publicPrivacy(ev) };
+  const info: RegistrationInfo = { eventName: ev.name, types: ev.types, open: ev.registrationOpen && !ev.purgedAt, privacy: publicPrivacy(ev), fields: ev.fields };
   e.json(200, info);
 }
 
@@ -869,10 +882,12 @@ export function register(e: PbRequestEvent) {
     if (!event || !event.registrationOpen || event.purgedAt) fail('closed', 'Les inscriptions sont fermées');
     if (!event.types.some((t) => t.id === form.typeId)) fail('invalid', 'Profil invalide');
     if (emailTaken(app, eventId, email)) fail('duplicate', 'Cette adresse email est déjà inscrite');
+    const { answers, error } = checkAnswers(event.fields, str(form.typeId), form.answers);
+    if (error) fail('invalid', error);
     token = insertParticipant(app, buildParticipant(eventId, {
       firstName: str(form.firstName), lastName: str(form.lastName), email, phone: str(form.phone),
       company: str(form.company), typeId: str(form.typeId), source: 'form', consentAt: nowIso(),
-    }, event.requireApproval ? 'pending' : 'accepted')).token;
+    }, event.requireApproval ? 'pending' : 'accepted', answers)).token;
   });
   e.json(201, { token });
 }

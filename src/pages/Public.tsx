@@ -4,6 +4,8 @@ import { navigate } from '../app/router';
 import type { AccessPage, RegistrationForm, RegistrationInfo } from '../data/store';
 import { QrImage, TypeBadge } from '../ui/components';
 import { PublicPrivacyNotice } from '../ui/privacy';
+import { FieldInput, type AnswerDraft } from '../ui/fields';
+import { fieldsFor } from '../domain/fields';
 
 const JUST_REGISTERED = 'event-control:just-registered';
 const longDate = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -12,6 +14,7 @@ export function Register({ eventId }: { eventId: string }) {
   const store = useStore();
   const [info, setInfo] = useState<RegistrationInfo | null | undefined>(undefined);
   const [form, setForm] = useState<RegistrationForm>({ firstName: '', lastName: '', email: '', phone: '', company: '', typeId: '', consent: false, website: '' });
+  const [answers, setAnswers] = useState<AnswerDraft>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -28,7 +31,7 @@ export function Register({ eventId }: { eventId: string }) {
     if (!form.consent) { setError('Votre accord est nécessaire pour vous inscrire.'); return; }
     setError(''); setBusy(true);
     try {
-      const { token } = await store.register(eventId, form);
+      const { token } = await store.register(eventId, { ...form, answers });
       try { sessionStorage.setItem(JUST_REGISTERED, token); } catch { /* message de confirmation non affiché */ }
       navigate('acces', token);
     } catch (err) { setError(errorMessage(err)); setBusy(false); }
@@ -77,6 +80,9 @@ export function Register({ eventId }: { eventId: string }) {
           <input id="r-website" name="website" tabIndex={-1} autoComplete="off" value={form.website ?? ''} onChange={set('website')} />
         </div>
         <div className="field"><label htmlFor="r-phone">Téléphone</label><input id="r-phone" type="tel" className="input" autoComplete="tel" value={form.phone} onChange={set('phone')} /></div>
+        {form.typeId && fieldsFor(info.fields, form.typeId).map((f) => (
+          <FieldInput key={f.id} field={f} idPrefix="r-field" value={answers[f.id]} onChange={(v) => setAnswers({ ...answers, [f.id]: v })} />
+        ))}
 
         <label className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap', cursor: 'pointer' }}>
           <input type="checkbox" checked={form.consent} onChange={set('consent')} style={{ width: 18, height: 18, marginTop: 3 }} />

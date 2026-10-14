@@ -5,6 +5,7 @@ import type { Role } from '../domain/access';
 import type {
   Direction, EventInfo, Participant, ParticipantStatus, ParticipantSource, ParticipantType, Passage, Refusal, ScanMethod, User,
 } from '../domain/model';
+import type { CustomField } from '../domain/fields';
 import type { SyncBatch, SyncResult } from '../domain/offline';
 import type { AuditEntry, ExportKind, PrivacyPolicy } from '../domain/privacy';
 import type { EventReport } from '../domain/report';
@@ -84,9 +85,14 @@ export interface NewParticipant {
   typeId: string;
   source: ParticipantSource;
   consentAt?: string | null;
+  /** Réponses aux champs personnalisés (F-33) ; vérifiées, sans exiger les champs obligatoires. */
+  answers?: Record<string, unknown>;
 }
 
-export type ParticipantPatch = Partial<Pick<Participant, 'firstName' | 'lastName' | 'email' | 'phone' | 'company' | 'typeId'>>;
+export type ParticipantPatch = Partial<Pick<Participant, 'firstName' | 'lastName' | 'email' | 'phone' | 'company' | 'typeId'>> & {
+  /** Réponses aux champs personnalisés, vérifiées par le stockage (F-33). */
+  answers?: Record<string, unknown>;
+};
 
 export interface EventSnapshot {
   event: EventInfo;
@@ -109,6 +115,8 @@ export interface RegistrationInfo {
   types: ParticipantType[];
   open: boolean;
   privacy: PublicPrivacy;
+  /** Champs personnalisés, à filtrer selon le type choisi (F-33). */
+  fields: CustomField[];
 }
 
 /** Ce que voit un participant sur sa page d'accès (F-40) : ses seules données. */
@@ -138,6 +146,8 @@ export interface RegistrationForm {
   consent: boolean;
   /** Champ piège, invisible : seul un robot le remplit (F-36). */
   website?: string;
+  /** Réponses aux champs personnalisés ; les champs obligatoires du type choisi sont exigés (F-33). */
+  answers?: Record<string, unknown>;
 }
 
 export class StoreError extends Error {
