@@ -288,11 +288,11 @@ export class PocketStore implements EventStore {
     for (const s of subscriptions) s.catch(() => undefined); // l'échec est traité par load()
 
     // Après une coupure, le temps réel se reconnecte mais les changements intervenus entre-temps
-    // sont perdus : tout est rechargé à chaque reconnexion, ou dès la première si le chargement a échoué
+    // sont perdus : tout est rechargé à chaque reconnexion
     let connections = 0;
     let failed = false;
     const reconnected = this.pb.realtime.subscribe('PB_CONNECT', () => {
-      if ((++connections > 1 || failed) && ready && !closed) {
+      if (++connections > 1 && ready && !closed) {
         load(true).then(() => { failed = false; emit(); }, () => undefined);
       }
     });
@@ -321,11 +321,25 @@ export class PocketStore implements EventStore {
       role = session?.memberships.find((m) => m.orgId === event!.orgId)?.role ?? null;
     };
 
-    load().catch(() => { event = null; failed = true; }).finally(() => { ready = true; emit(); });
+    // Événement introuvable ou inaccessible : null. Toute autre erreur (réseau, serveur surchargé,
+    // limitation des requêtes) est passagère : nouvel essai, de plus en plus espacé, sans rien transmettre
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const attempt = (delayMs: number) => {
+      load(failed).then(
+        () => { failed = false; ready = true; emit(); },
+        (err) => {
+          failed = true;
+          if (err instanceof ClientResponseError && (err.status === 404 || err.status === 403)) { event = null; ready = true; emit(); return; }
+          if (!closed) retry = setTimeout(() => attempt(Math.min(delayMs * 2, 30_000)), delayMs);
+        },
+      );
+    };
+    attempt(1000);
 
     return () => {
       closed = true;
       clearTimeout(pending);
+      clearTimeout(retry);
       for (const s of [...subscriptions, reconnected]) s.then((unsubscribe) => unsubscribe()).catch(() => undefined);
     };
   }

@@ -67,9 +67,14 @@ sorties et des retours. Il vérifie qu'aucun scan n'échoue, que la base, les de
 affichent les mêmes comptes, et que les délais sont tenus : scan en moins de 1 s, propagation en moins de 3 s.
 Il affiche un rapport chiffré.
 
+Un second test reproduit la recette n° 3. Le serveur est coupé pendant que les deux postes scannent, avec des
+badges lus sur les deux postes, des sorties et des entrées refusées. Au retour du serveur, le test vérifie que chaque
+doublon est signalé, que le comptage final est juste et que l'écran Direct, resté ouvert, affiche le même résultat.
+
 - `CHARGE_MINUTES=30` répartit les arrivées sur 30 minutes, au rythme du jour J.
+- `CHARGE_COUPURE_MINUTES=15` fait durer réellement la coupure du second test.
 - `CHARGE_URL=https://…` vise un serveur déjà en ligne, pour la recette. Les comptes de test y restent ;
-  l'événement de test est supprimé à la fin.
+  l'événement de test est supprimé à la fin. Le test de coupure est alors ignoré.
 
 Sous PowerShell : `$env:CHARGE_MINUTES=30; npm run test:charge`.
 

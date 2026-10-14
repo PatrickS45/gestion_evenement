@@ -275,7 +275,8 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
     it("entrée hors ligne antérieure à une entrée en ligne : c'est l'entrée en ligne qui devient le doublon", async () => {
       const { a, b, event, lea } = await setup();
       const online = (await a.scan(event.id, lea.token, 'in', 'camera', 'poste-1')).passage!;
-      expect(statuses(await b.syncOffline(event.id, { stationId: 'poste-2', passages: [offline(lea.id, 'in', 3)], refusals: [] }))).toEqual(['counted']);
+      const synced = await b.syncOffline(event.id, { stationId: 'poste-2', passages: [offline(lea.id, 'in', 3)], refusals: [] });
+      expect(synced).toEqual({ passages: [expect.objectContaining({ status: 'counted' })], newDuplicates: 1 }); // le doublon est l'entrée déjà reçue
       const snap = (await snapshotOf(a, event.id))!;
       expect(snap.passages.find((p) => p.id === online.id)).toMatchObject({ offlineDuplicate: true });
       expect(snap.participants.find((p) => p.id === lea.id)).toMatchObject({ inside: true, entryCount: 1 });

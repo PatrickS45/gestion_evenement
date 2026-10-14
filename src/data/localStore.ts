@@ -485,6 +485,7 @@ export class LocalStore implements EventStore {
       const nowMs = this.now().getTime();
       const base = { eventId, agentId: agent.id, agentName: agent.name, stationId: String(batch.stationId ?? '').slice(0, 60) };
       const status = new Map<string, SyncStatus>();
+      let newDuplicates = 0;
 
       // Passages regroupés par participant, puis journal de chacun rejoué (F-63)
       const byParticipant = new Map<string, Passage[]>();
@@ -506,6 +507,7 @@ export class LocalStore implements EventStore {
         const changed = new Map(r.changed.map((x) => [x.id, x]));
         db.passages = db.passages.map((x) => changed.get(x.id) ?? x).concat(r.added);
         db.participants[participantId] = r.participant;
+        newDuplicates += r.newDuplicates;
         const flags = new Map([...known.map((x) => changed.get(x.id) ?? x), ...r.added].map((x) => [x.id, x.offlineDuplicate]));
         for (const p of received) status.set(p.id, flags.get(p.id) ? 'duplicate' : 'counted');
       }
@@ -514,10 +516,13 @@ export class LocalStore implements EventStore {
         const r = parseOfflineRefusal(raw, nowMs);
         if (r && !db.refusals.some((x) => x.id === r.id)) db.refusals.push({ ...base, ...r });
       }
-      return { passages: batch.passages.map((raw) => {
-        const id = String((raw as { id?: unknown })?.id ?? '');
-        return { id, status: status.get(id) ?? 'rejected' };
-      }) };
+      return {
+        passages: batch.passages.map((raw) => {
+          const id = String((raw as { id?: unknown })?.id ?? '');
+          return { id, status: status.get(id) ?? 'rejected' };
+        }),
+        newDuplicates,
+      };
     });
   }
 

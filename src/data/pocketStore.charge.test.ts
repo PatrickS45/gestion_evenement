@@ -4,10 +4,14 @@
 //   CHARGE_MINUTES=30     arrivées réparties sur 30 minutes, comme le jour J
 //   CHARGE_URL=https://…  serveur déjà en ligne (recette) : comptes et organisation de test y restent,
 //                         l'événement de test est supprimé à la fin
-import { compareNames, type Direction } from '../domain/model';
+//   CHARGE_COUPURE_MINUTES=15  durée réelle de la coupure du second test (recette n° 3)
+import { liveView, replayPassages } from '../domain/attendance';
+import { compareNames, type Direction, type Participant } from '../domain/model';
 import { PocketStore } from './pocketStore';
+import { StationStore } from './stationStore';
 import type { EventSnapshot, NewParticipant } from './store';
 import { serverInstalled, startTestServer, type TestServer } from './testServer';
+import { memoryBackend, Vault } from './vault';
 
 const PARTICIPANTS = 1100;
 const ARRIVALS = 400;
@@ -17,6 +21,7 @@ const EXITS = 25;
 const RETURNS = 10;
 const MINUTES = Number(process.env.CHARGE_MINUTES ?? 0);
 const REMOTE = process.env.CHARGE_URL;
+const CUT_MINUTES = Number(process.env.CHARGE_COUPURE_MINUTES ?? 0);
 const PASSWORD = 'motdepasse-solide';
 
 const SCAN_LIMIT_MS = 1000; // NF-03
@@ -226,4 +231,104 @@ describe.skipIf(!serverInstalled && !REMOTE)('Test de charge — pic du premier 
     expect(propagationMs).toHaveLength(passagesTotal * 2);
     expect(Math.max(...propagationMs)).toBeLessThan(PROPAGATION_LIMIT_MS);
   }, (MINUTES * 60 + 300) * 1000);
+
+  // Recette n° 3 : coupure du réseau sur les deux postes, scans croisés, puis synchronisation.
+  // La coupure est simulée en arrêtant le serveur : impossible sur un serveur distant.
+  it.skipIf(!!REMOTE)(`coupure sur les deux postes${CUT_MINUTES ? ` pendant ${CUT_MINUTES} minutes` : ''}, puis synchronisation (F-61, F-63)`, async () => {
+    const url = server!.url;
+    const n = `c${Date.now().toString(36)}`;
+    const owner = new PocketStore(url);
+    const orgId = (await owner.signUp({ name: 'Claire Owner', email: `claire-${n}@x.fr`, password: PASSWORD, organization: 'Salon Pro' })).memberships[0]!.orgId;
+    const event = await owner.createEvent(orgId, { name: 'Salon', startDate: '2027-03-11', endDate: '2099-12-31', capacity: PARTICIPANTS });
+    const imported = await owner.addParticipants(event.id, Array.from({ length: PARTICIPANTS }, (_, i) => ({
+      firstName: `Prénom${i}`, lastName: `Nom${String(i).padStart(4, '0')}`, email: `p${i}@coupure.fr`,
+      typeId: event.types[i % event.types.length]!.id, source: 'import' as const,
+    })));
+
+    const stations: StationStore[] = [];
+    for (const i of [1, 2]) {
+      const st = new StationStore(new PocketStore(url), new Vault(memoryBackend()), { probeMs: 500 });
+      await st.signUp({ name: `Agent ${i}`, email: `agent${i}-${n}@x.fr`, password: PASSWORD, organization: `Perso ${i}` });
+      await owner.addMember(orgId, `agent${i}-${n}@x.fr`, 'agent');
+      await st.getSession();
+      stations.push(st);
+    }
+    const [a, b] = stations as [StationStore, StationStore];
+    const direct = new Watcher(owner, event.id); // écran Direct, resté ouvert pendant la coupure
+    await direct.until((s) => s.participants.length === PARTICIPANTS, 30_000, 'chargement initial');
+
+    const people = [...imported].sort(() => Math.random() - 0.5);
+    const before = people.slice(0, 100); // entrés avant la coupure
+    const during = people.slice(100, 300); // arrivés pendant la coupure
+    const both = people.slice(300, 315); // badge lu sur les deux postes pendant la coupure
+    const leaving = before.slice(0, 20); // sortis pendant la coupure, sur le poste 2…
+    const leavingTwice = leaving.slice(0, 5); // … et aussi sur le poste 1
+    const rescanned = before.slice(20, 25); // rescannés en entrée : la copie sait qu'ils sont déjà là
+
+    type Step = [StationStore, Participant, Direction, string];
+    const scan = ([st, p, direction, station]: Step) => st.scan(event.id, p.token, direction, 'camera', station);
+    for (const [i, p] of before.entries()) await scan([i % 2 ? b : a, p, 'in', `poste-${(i % 2) + 1}`]);
+    for (const st of stations) await st.prepare(event.id); // copie de secours avant l'ouverture
+
+    server!.cut();
+    const steps: Step[] = [
+      ...during.map((p, i): Step => [i % 2 ? b : a, p, 'in', `poste-${(i % 2) + 1}`]),
+      ...both.flatMap((p): Step[] => [[a, p, 'in', 'poste-1'], [b, p, 'in', 'poste-2']]),
+      ...leaving.map((p): Step => [b, p, 'out', 'poste-2']),
+      ...leavingTwice.map((p): Step => [a, p, 'out', 'poste-1']),
+      ...rescanned.map((p): Step => [a, p, 'in', 'poste-1']),
+    ];
+    const spacing = (CUT_MINUTES * 60_000) / steps.length;
+    const decisions: string[] = [];
+    for (const step of steps) {
+      decisions.push((await scan(step)).decision.result);
+      if (spacing) await new Promise((r) => setTimeout(r, spacing));
+    }
+    expect([a.getStatus().online, b.getStatus().online]).toEqual([false, false]);
+    expect(decisions.filter((d) => d === 'refused')).toHaveLength(rescanned.length);
+    const sent = a.getStatus().pending + b.getStatus().pending;
+
+    const started = performance.now();
+    await server!.resume();
+    for (const st of stations) {
+      await vi.waitFor(() => expect(st.getStatus()).toMatchObject({ online: true, pending: 0 }), { timeout: 30_000, interval: 100 });
+    }
+    const syncMs = performance.now() - started;
+
+    // Attendus : chaque doublon est détecté, signalé aux postes et exclu du comptage
+    const duplicates = both.length + leavingTwice.length;
+    const present = before.length + during.length + both.length - leaving.length;
+    const reloaded = new PocketStore(url);
+    await reloaded.signIn(`claire-${n}@x.fr`, PASSWORD);
+    const fresh = new Watcher(reloaded, event.id);
+    await fresh.until((s) => s.participants.length === PARTICIPANTS, 30_000, 'relecture');
+    const db = fresh.snapshot!;
+    await direct.until((s) => s.passages.length === db.passages.length && s.participants.filter((p) => p.inside).length === present, 15_000, 'écran Direct');
+    const view = liveView(db.event, db.participants, db.passages, Date.now());
+    const reported = a.getStatus().duplicates + b.getStatus().duplicates;
+
+    console.log(`\nRecette n° 3 — serveur coupé, ${steps.length} scans hors ligne sur 2 postes, ${sent} enregistrements envoyés au retour`);
+    console.table({
+      attendu: { doublons: duplicates, présents: present, 'refus « déjà présent »': rescanned.length },
+      obtenu: { doublons: reported, présents: view.present, 'refus « déjà présent »': db.refusals.filter((r) => r.reason === 'already-inside').length },
+    });
+    console.table({ 'synchronisation des 2 postes au retour du serveur': { 'durée (ms)': Math.round(syncMs) } });
+
+    expect(reported).toBe(duplicates);
+    expect(a.getStatus().rejected + b.getStatus().rejected).toBe(0);
+    expect(view.duplicates).toHaveLength(duplicates);
+    expect(view.duplicates.every((d) => d.original !== null && d.duplicate.origin === 'offline')).toBe(true);
+    expect(view.present).toBe(present);
+    expect(view.consistent).toBe(true);
+    expect(replayPassages(db.passages).insideIds.size).toBe(present);
+    expect(db.refusals.filter((r) => r.reason === 'already-inside')).toHaveLength(rescanned.length);
+    for (const p of db.participants) {
+      const counted = db.passages.filter((x) => x.participantId === p.id && !x.offlineDuplicate);
+      expect(p.entryCount, p.lastName).toBe(counted.filter((x) => x.direction === 'in').length);
+    }
+    expect(direct.snapshot!.passages.filter((p) => p.offlineDuplicate)).toHaveLength(duplicates);
+
+    for (const w of [direct, fresh]) w.unsubscribe();
+    for (const st of stations) st.dispose();
+  }, (CUT_MINUTES * 60 + 300) * 1000);
 });

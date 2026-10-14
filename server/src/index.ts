@@ -523,6 +523,7 @@ export function syncOffline(e: PbRequestEvent) {
   if (passagesIn.length + refusalsIn.length > SYNC_MAX) fail('invalid', 'Lot trop volumineux');
   const rawId = (raw: unknown) => str((raw as { id?: unknown } | null)?.id);
   const status = new Map<string, SyncStatus>();
+  let newDuplicates = 0;
 
   $app.runInTransaction((app) => {
     const { user } = requireEvent(app, e, eventId, 'scan');
@@ -555,6 +556,7 @@ export function syncOffline(e: PbRequestEvent) {
       for (const p of r.added) writePassage(app, p);
       writeParticipant(record, r.participant);
       app.save(record);
+      newDuplicates += r.newDuplicates;
       const flags = new Map<string, boolean>();
       for (const k of known) flags.set(k.id, k.offlineDuplicate);
       for (const p of [...r.changed, ...r.added]) flags.set(p.id, p.offlineDuplicate);
@@ -572,7 +574,10 @@ export function syncOffline(e: PbRequestEvent) {
     }
   });
 
-  const result: SyncResult = { passages: passagesIn.map((raw) => ({ id: rawId(raw), status: status.get(rawId(raw)) ?? 'rejected' })) };
+  const result: SyncResult = {
+    passages: passagesIn.map((raw) => ({ id: rawId(raw), status: status.get(rawId(raw)) ?? 'rejected' })),
+    newDuplicates,
+  };
   e.json(200, result);
 }
 

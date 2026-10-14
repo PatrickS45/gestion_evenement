@@ -38,6 +38,11 @@ export type SyncStatus = 'counted' | 'duplicate' | 'rejected';
 
 export interface SyncResult {
   passages: { id: string; status: SyncStatus }[];
+  /**
+   * Variation du nombre de doublons due à ce lot, passages des autres postes compris : une entrée hors
+   * ligne plus ancienne fait d'un passage déjà reçu le doublon. La somme sur tous les envois est le total.
+   */
+  newDuplicates: number;
 }
 
 /** Taille maximale d'un lot ; au-delà, le poste envoie en plusieurs fois. */
@@ -119,12 +124,31 @@ export function replayParticipant(passages: Passage[]): ParticipantReplay {
   return r;
 }
 
+export interface DuplicateReport {
+  duplicate: Passage;
+  /** Passage déjà compté que le doublon répète ; null s'il n'y en a pas (sortie d'une personne jamais entrée). */
+  original: Passage | null;
+}
+
+/** Doublons hors ligne du journal (F-63), avec le passage qu'ils répètent, du plus récent au plus ancien. */
+export function offlineDuplicates(passages: Passage[]): DuplicateReport[] {
+  const lastCounted = new Map<string, Passage>();
+  const reports: DuplicateReport[] = [];
+  for (const p of chronological(passages)) {
+    if (p.offlineDuplicate) reports.push({ duplicate: p, original: lastCounted.get(p.participantId) ?? null });
+    else lastCounted.set(p.participantId, p);
+  }
+  return reports.reverse();
+}
+
 export interface Reconciliation {
   participant: Participant;
   /** Passages reçus à ajouter au journal, avec leur marquage « doublon hors ligne ». */
   added: Passage[];
   /** Passages déjà connus dont le marquage change : à réécrire. */
   changed: Passage[];
+  /** Variation du nombre de doublons du participant. */
+  newDuplicates: number;
 }
 
 /**
@@ -156,5 +180,6 @@ export function reconcile(participant: Participant, known: Passage[], received: 
     },
     added: passages.slice(known.length),
     changed,
+    newDuplicates: replay.duplicates.size - known.filter((p) => p.offlineDuplicate).length,
   };
 }

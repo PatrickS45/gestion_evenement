@@ -1,6 +1,6 @@
 import { replayPassages } from './attendance';
 import { makeParticipant, makePassage } from './fixtures';
-import { reconcile, replayParticipant } from './offline';
+import { offlineDuplicates, reconcile, replayParticipant } from './offline';
 
 const at = (hhmm: string) => `2027-03-11T${hhmm}:00.000Z`;
 const offline = { origin: 'offline' as const };
@@ -138,5 +138,22 @@ describe('reconcile — intégration des passages d\'un poste hors ligne (F-61, 
     expect(present).toEqual(['p1', 'p2', 'p3']);
     expect([...replayPassages(all).insideIds].sort()).toEqual(present);
     expect(people.get('p2')).toMatchObject({ entryCount: 2 });
+  });
+});
+
+describe("offlineDuplicates — détail des doublons pour l'écran Direct (F-63)", () => {
+  it("associe chaque doublon au passage déjà compté qu'il répète, du plus récent au plus ancien", () => {
+    const journal = [
+      makePassage('p1', 'in', at('09:00'), { id: 'a', stationId: 'poste-1' }),
+      makePassage('p1', 'in', at('09:02'), { id: 'b', stationId: 'poste-2', ...offline, offlineDuplicate: true }),
+      makePassage('p2', 'out', at('09:10'), { id: 'c', ...offline, offlineDuplicate: true }),
+      makePassage('p1', 'out', at('10:00'), { id: 'd' }),
+      makePassage('p1', 'out', at('10:01'), { id: 'e', ...offline, offlineDuplicate: true }),
+    ];
+    expect(offlineDuplicates(journal).map((r) => [r.duplicate.id, r.original?.id ?? null])).toEqual([['e', 'd'], ['c', null], ['b', 'a']]);
+  });
+
+  it('aucun doublon : liste vide', () => {
+    expect(offlineDuplicates([makePassage('p1', 'in', at('09:00'))])).toEqual([]);
   });
 });

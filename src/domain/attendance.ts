@@ -2,6 +2,7 @@
 import type { EventInfo, Participant, ParticipantType, Passage } from './model';
 import { floorQuarter, parisDay, QUARTER_MS, toMs } from './time';
 import { gaugeLevel, type GaugeLevel } from './gauge';
+import { offlineDuplicates, type DuplicateReport } from './offline';
 
 export interface DayStats {
   day: string;
@@ -113,6 +114,8 @@ export interface LiveView {
   days: DayStats[];
   curve: { start: number; present: number }[];
   recent: Passage[];
+  /** Doublons hors ligne détectés à la synchronisation des postes (F-63). */
+  duplicates: DuplicateReport[];
 }
 
 const normalizeCompany = (c: string) => c.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -148,5 +151,6 @@ export function liveView(event: EventInfo, participants: Participant[], passages
     days: replay.days,
     curve: quarterCurve(replay.timeline, todayKey, now),
     recent: [...passages].sort((a, b) => toMs(b.at) - toMs(a.at)).slice(0, 12),
+    duplicates: offlineDuplicates(passages),
   };
 }

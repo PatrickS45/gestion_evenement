@@ -26,7 +26,8 @@ export interface StationStatus {
   /** Passages et refus enregistrés hors ligne, pas encore envoyés (F-62). */
   pending: number;
   syncing: boolean;
-  /** Bilan des envois depuis la connexion : doublons hors ligne (F-63) et passages rejetés par le serveur. */
+  /** Bilan des envois depuis la connexion : doublons hors ligne détectés (F-63), y compris parmi les passages
+   *  d'autres postes, et passages rejetés par le serveur. */
   duplicates: number;
   rejected: number;
   lastSyncAt: string | null;
@@ -173,13 +174,13 @@ export class StationStore implements EventStore {
           if (err instanceof StoreError && err.code === 'unreachable') return false;
           // Événement supprimé ou droits retirés : ces passages ne pourront jamais être reçus
           if (err instanceof StoreError && (err.code === 'not-found' || err.code === 'forbidden')) {
-            result = { passages: batch.passages.map((p) => ({ id: p.id, status: 'rejected' as const })) };
+            result = { passages: batch.passages.map((p) => ({ id: p.id, status: 'rejected' as const })), newDuplicates: 0 };
           } else throw err;
         }
         this.queue = this.queue.slice(n);
         await this.saveQueue();
         this.setStatus({
-          duplicates: this.status.duplicates + result.passages.filter((p) => p.status === 'duplicate').length,
+          duplicates: Math.max(0, this.status.duplicates + result.newDuplicates),
           rejected: this.status.rejected + result.passages.filter((p) => p.status === 'rejected').length,
           lastSyncAt: new Date(this.now()).toISOString(),
         });
@@ -254,9 +255,12 @@ export class StationStore implements EventStore {
   /** Télécharge et enregistre aussitôt la copie d'un événement, avant l'ouverture (F-60). */
   async prepare(eventId: string): Promise<CopyInfo> {
     await this.ready;
+    // Sans réponse du serveur, l'abonnement ne transmet rien : délai maximal de 20 secondes
+    let stop = () => {};
     const snapshot = await new Promise<EventSnapshot | null>((resolve) => {
-      const stop = this.inner.subscribe(eventId, (s) => { resolve(s); setTimeout(() => stop(), 0); });
-    });
+      const timer = setTimeout(() => resolve(null), 20_000);
+      stop = this.inner.subscribe(eventId, (s) => { clearTimeout(timer); resolve(s); });
+    }).finally(() => setTimeout(() => stop(), 0));
     if (!snapshot) throw new StoreError('unreachable', 'Copie impossible : serveur injoignable ou événement introuvable');
     this.bases.set(eventId, snapshot);
     await this.saveBase(eventId);
