@@ -78,6 +78,22 @@ doublon est signalé, que le comptage final est juste et que l'écran Direct, re
 
 Sous PowerShell : `$env:CHARGE_MINUTES=30; npm run test:charge`.
 
+### Protection des données (NF-30 à NF-36)
+
+Chaque événement a sa politique de confidentialité : responsable, contact, base légale, durée de conservation
+(3 mois par défaut). Elle est reprise des valeurs de l'organisation et affichée sur le formulaire et la page
+participant. Les inscriptions ne s'ouvrent pas sans responsable ni contact.
+
+À l'échéance, le serveur efface chaque nuit les données personnelles ; un bilan anonyme est enregistré juste avant
+et conservé. Les imports, exports, effacements et purges sont tracés (page « Données personnelles »). Le détail, à
+remettre au client, est dans [docs/protection-des-donnees.md](docs/protection-des-donnees.md).
+
+### Mise en production
+
+`npm run server` sert aussi l'application construite (dossier `dist`), avec ses en-têtes de sécurité : un seul
+service à exploiter. Avant `npm run build`, placez `VITE_POCKETBASE_URL=/` dans `.env.production.local` pour
+utiliser le serveur. Le service doit être derrière HTTPS.
+
 ## Organisation du code
 
 | Dossier | Contenu |

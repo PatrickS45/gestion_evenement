@@ -59,4 +59,13 @@ describe.skipIf(!serverInstalled)('PocketStore (serveur)', () => {
     expect(await owner.listReports(orgId)).toEqual([expect.objectContaining({ eventName: 'Ancien salon', registered: 1, reason: 'purge' })]);
     expect((await owner.listAudit(orgId))[0]).toMatchObject({ action: 'purge', count: 1, actorName: 'Purge automatique', detail: 'Échéance de conservation' });
   });
+
+  it('en-têtes de sécurité sur toutes les réponses (NF-21)', async () => {
+    const r = await fetch(`${url}/api/health`);
+    expect(r.headers.get('content-security-policy')).toMatch(/default-src 'self'.*frame-ancestors 'none'/);
+    expect(r.headers.get('x-frame-options')).toBe('DENY');
+    expect(r.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(r.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(r.headers.get('permissions-policy')).toContain('camera=(self)');
+  });
 });

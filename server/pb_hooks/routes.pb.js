@@ -2,6 +2,30 @@
 // Routes d'Event Control. La logique est dans server/src, compilée dans lib/ec.cjs
 // (npm run build:hooks). Chaque gestionnaire s'exécute isolé : il charge le module lui-même.
 
+// En-têtes de sécurité sur toutes les réponses, application comprise (NF-21) : aucune ressource
+// extérieure, pas d'intégration dans une autre page, caméra réservée à l'application.
+routerUse((e) => {
+  const h = e.response.header();
+  h.set('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'wasm-unsafe-eval'", // décodeur de QR code (WebAssembly)
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    "worker-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; '));
+  h.set('X-Frame-Options', 'DENY');
+  h.set('X-Content-Type-Options', 'nosniff');
+  h.set('Referrer-Policy', 'no-referrer');
+  h.set('Permissions-Policy', 'camera=(self), microphone=(), geolocation=(), payment=(), usb=()');
+  h.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  return e.next();
+});
+
 routerAdd('GET', '/api/ec/session', (e) => require(`${__hooks}/lib/ec.cjs`).session(e));
 routerAdd('POST', '/api/ec/signup', (e) => require(`${__hooks}/lib/ec.cjs`).signUp(e));
 

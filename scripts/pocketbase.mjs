@@ -1,6 +1,7 @@
 // Installation et lancement du serveur PocketBase (version figée, archive vérifiée).
 //   node scripts/pocketbase.mjs install   télécharge le binaire dans server/bin
-//   node scripts/pocketbase.mjs serve     compile les hooks puis lance le serveur sur le port 8090
+//   node scripts/pocketbase.mjs serve     compile les hooks puis lance le serveur sur le port 8090 ;
+//                                         il sert aussi l'application construite (dossier dist, npm run build)
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -47,6 +48,7 @@ export async function install() {
 export function serverArgs(dataDir = join(serverDir, 'pb_data')) {
   return [
     `--dir=${dataDir}`,
+    `--publicDir=${join(root, 'dist')}`,
     `--hooksDir=${join(serverDir, 'pb_hooks')}`,
     `--migrationsDir=${join(serverDir, 'pb_migrations')}`,
   ];
