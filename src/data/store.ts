@@ -134,6 +134,8 @@ export interface RegistrationForm {
   company: string;
   typeId: string;
   consent: boolean;
+  /** Champ piège, invisible : seul un robot le remplit (F-36). */
+  website?: string;
 }
 
 export class StoreError extends Error {

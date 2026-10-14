@@ -348,6 +348,13 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
       await expect(a.register(event.id, { ...form, consent: false })).rejects.toMatchObject({ code: 'invalid' });
       await expect(a.register(event.id, { ...form, email: 'lea@x.fr' })).rejects.toMatchObject({ code: 'duplicate' });
     });
+
+    it('refuse une inscription dont le champ piège est rempli (F-36)', async () => {
+      const { a, event } = await setup();
+      await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });
+      await expect(a.register(event.id, { ...form, website: 'https://spam.example' })).rejects.toMatchObject({ code: 'invalid' });
+      expect((await snapshotOf(a, event.id))!.participants.some((p) => p.email === 'sophie@x.fr')).toBe(false);
+    });
   });
 
   describe(`${name} — agents par code d'accès (F-04)`, () => {

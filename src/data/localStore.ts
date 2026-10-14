@@ -593,6 +593,7 @@ export class LocalStore implements EventStore {
   }
 
   async register(eventId: string, form: RegistrationForm) {
+    if (form.website?.trim()) throw new StoreError('invalid', 'Inscription refusée'); // champ piège rempli : robot (F-36)
     if (!form.consent) throw new StoreError('invalid', 'Le consentement est obligatoire');
     if (!form.lastName.trim()) throw new StoreError('invalid', 'Le nom est obligatoire');
     if (!EMAIL.test(form.email.trim())) throw new StoreError('invalid', 'Adresse email invalide');

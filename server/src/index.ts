@@ -844,6 +844,7 @@ export function registrationInfo(e: PbRequestEvent) {
 export function register(e: PbRequestEvent) {
   const eventId = e.request.pathValue('id');
   const form = body(e) as unknown as RegistrationForm;
+  if (str(form.website).trim()) fail('invalid', 'Inscription refusée'); // champ piège rempli : robot (F-36)
   if (form.consent !== true) fail('invalid', 'Le consentement est obligatoire');
   if (!str(form.lastName).trim()) fail('invalid', 'Le nom est obligatoire');
   const email = normEmail(form.email);

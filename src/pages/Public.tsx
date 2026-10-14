@@ -11,7 +11,7 @@ const longDate = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr
 export function Register({ eventId }: { eventId: string }) {
   const store = useStore();
   const [info, setInfo] = useState<RegistrationInfo | null | undefined>(undefined);
-  const [form, setForm] = useState<RegistrationForm>({ firstName: '', lastName: '', email: '', phone: '', company: '', typeId: '', consent: false });
+  const [form, setForm] = useState<RegistrationForm>({ firstName: '', lastName: '', email: '', phone: '', company: '', typeId: '', consent: false, website: '' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -71,6 +71,11 @@ export function Register({ eventId }: { eventId: string }) {
         </div>
         <div className="field"><label htmlFor="r-email" className="required">Adresse email</label><input id="r-email" type="email" className="input" autoComplete="email" value={form.email} onChange={set('email')} /></div>
         <div className="field"><label htmlFor="r-company">Société ou enseigne</label><input id="r-company" className="input" autoComplete="organization" value={form.company} onChange={set('company')} /></div>
+        {/* Champ piège (F-36) : invisible et hors du parcours au clavier ; seul un robot le remplit */}
+        <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', width: 1, height: 1, overflow: 'hidden' }}>
+          <label htmlFor="r-website">Site web</label>
+          <input id="r-website" name="website" tabIndex={-1} autoComplete="off" value={form.website ?? ''} onChange={set('website')} />
+        </div>
         <div className="field"><label htmlFor="r-phone">Téléphone</label><input id="r-phone" type="tel" className="input" autoComplete="tel" value={form.phone} onChange={set('phone')} /></div>
 
         <label className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap', cursor: 'pointer' }}>
