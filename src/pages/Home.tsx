@@ -10,12 +10,13 @@ import { longDay } from '../ui/privacy';
 
 const dayLabel = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 
-/** Connexion (F-01), ou création d'un compte et de sa première organisation. */
+/** Connexion (F-01), ou création d'un compte : avec sa première organisation, ou pour rejoindre un événement par code (F-04). */
 export function SignIn() {
   const store = useStore();
   const { setSession } = useSession();
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
-  const [form, setForm] = useState({ name: '', email: '', password: '', organization: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', organization: '', code: '' });
+  const [joining, setJoining] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -26,7 +27,16 @@ export function SignIn() {
     setError('');
     setBusy(true);
     try {
-      setSession(mode === 'signin' ? await store.signIn(form.email, form.password) : await store.signUp(form));
+      if (mode === 'signin') { setSession(await store.signIn(form.email, form.password)); return; }
+      const created = await store.signUp({ name: form.name, email: form.email, password: form.password, organization: joining ? '' : form.organization });
+      if (!joining) { setSession(created); return; }
+      // Le compte existe : même si le code est refusé, l'agent pourra le ressaisir une fois connecté
+      try {
+        const session = await store.joinEvent(form.code);
+        setSession(session);
+        const access = session.eventAccess[0];
+        if (access) navigate('e', access.eventId, 'scan');
+      } catch (err) { setSession(await store.getSession()); throw err; }
     } catch (err) { setError(errorMessage(err)); }
     finally { setBusy(false); }
   };
@@ -61,10 +71,31 @@ export function SignIn() {
             aria-describedby={mode === 'signup' ? 'si-password-hint' : undefined} />
         </div>
         {mode === 'signup' && (
+          <fieldset style={{ border: 'none', padding: 0, margin: 0 }} className="stack">
+            <legend className="label" style={{ marginBottom: 8 }}>Vous êtes</legend>
+            <label className="row" style={{ flexWrap: 'nowrap', cursor: 'pointer' }}>
+              <input type="radio" name="su-kind" checked={!joining} onChange={() => setJoining(false)} />
+              <span>Organisateur : je crée mon organisation</span>
+            </label>
+            <label className="row" style={{ flexWrap: 'nowrap', cursor: 'pointer' }}>
+              <input type="radio" name="su-kind" checked={joining} onChange={() => setJoining(true)} />
+              <span>Agent d'accueil : j'ai un code d'accès à un événement</span>
+            </label>
+          </fieldset>
+        )}
+        {mode === 'signup' && !joining && (
           <div className="field">
             <label htmlFor="su-org" className="required">Nom de votre organisation</label>
             <span className="hint" id="su-org-hint">Vous en serez le propriétaire et pourrez y ajouter votre équipe.</span>
             <input id="su-org" className="input" autoComplete="organization" required maxLength={200} value={form.organization} onChange={set('organization')} aria-describedby="su-org-hint" />
+          </div>
+        )}
+        {mode === 'signup' && joining && (
+          <div className="field">
+            <label htmlFor="su-code" className="required">Code d'accès</label>
+            <span className="hint" id="su-code-hint">8 caractères, communiqués par l'organisateur.</span>
+            <input id="su-code" className="input" required autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={12}
+              value={form.code} onChange={set('code')} aria-describedby="su-code-hint" style={{ fontFamily: 'ui-monospace, monospace', letterSpacing: 2 }} />
           </div>
         )}
         {error && <p role="alert" className="error">{error}</p>}
@@ -98,6 +129,7 @@ export function Events() {
   const [events, setEvents] = useState<EventInfo[] | null>(null);
   const [form, setForm] = useState({ name: '', startDate: '', endDate: '', venue: '', capacity: '1000' });
   const [orgName, setOrgName] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -135,7 +167,21 @@ export function Events() {
 
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
   const memberships = session?.memberships ?? [];
+  const eventAccess = session?.eventAccess ?? [];
   const today = parisDay(Date.now());
+
+  const join = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      const before = new Set(eventAccess.map((a) => a.eventId));
+      const next = await store.joinEvent(code);
+      setSession(next);
+      setCode('');
+      const joined = next.eventAccess.find((a) => !before.has(a.eventId));
+      notify(joined ? `Vous avez rejoint « ${joined.eventName} »` : 'Vous avez déjà accès à cet événement');
+      if (joined) navigate('e', joined.eventId, 'scan');
+    } catch (err) { notify(errorMessage(err), 'danger'); }
+  };
 
   return (
     <>
@@ -162,7 +208,22 @@ export function Events() {
           </div>
         </div>
 
-        {!org ? <p className="muted">Vous n'êtes membre d'aucune organisation. Créez la vôtre ci-dessous.</p>
+        {eventAccess.length > 0 && (
+          <section aria-labelledby="joined-title" className="stack">
+            <h2 id="joined-title" style={{ fontSize: 18 }}>Événements rejoints avec un code</h2>
+            <ul className="grid" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {eventAccess.map((a) => (
+                <li key={a.eventId} className="card stack" style={{ gap: 6 }}>
+                  <h3 style={{ fontSize: 18, margin: 0 }}><a href={href('e', a.eventId, 'scan')}>{a.eventName}</a></h3>
+                  <p className="muted">{a.startDate === a.endDate ? dayLabel(a.startDate) : `Du ${dayLabel(a.startDate)} au ${dayLabel(a.endDate)}`}</p>
+                  <p className="small">Agent d'accueil</p>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {!org ? <p className="muted">Vous n'êtes membre d'aucune organisation. Rejoignez un événement avec son code, ou créez votre organisation ci-dessous.</p>
           : events === null ? <p role="status">Chargement…</p>
             : events.length === 0
               ? <p className="muted">Aucun événement pour le moment.{can(org.role, 'event.create') && ' Créez le premier ci-dessous.'}</p>
@@ -215,6 +276,17 @@ export function Events() {
             <div><button className="btn" type="submit">Créer l'événement</button></div>
           </form>
         )}
+
+        <form className="card stack" onSubmit={join} aria-labelledby="join-title">
+          <h2 id="join-title" style={{ marginBottom: 0 }}>Rejoindre un événement avec un code</h2>
+          <p className="muted">Agent d'accueil : saisissez le code communiqué par l'organisateur. Vous n'aurez accès qu'à cet événement.</p>
+          <div className="row" style={{ flexWrap: 'nowrap' }}>
+            <label htmlFor="join-code" className="sr-only">Code d'accès</label>
+            <input id="join-code" className="input" required autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={12}
+              value={code} onChange={(e) => setCode(e.target.value)} placeholder="Code à 8 caractères" style={{ fontFamily: 'ui-monospace, monospace', letterSpacing: 2 }} />
+            <button className="btn" type="submit">Rejoindre</button>
+          </div>
+        </form>
 
         <details className="card">
           <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Créer une autre organisation</summary>

@@ -13,7 +13,7 @@ if (serverInstalled) {
 }
 
 describe.skipIf(!serverInstalled)('PocketStore (serveur)', () => {
-  describeStoreContract('PocketStore', async () => [new PocketStore(url), new PocketStore(url)] as const);
+  describeStoreContract('PocketStore', async () => [new PocketStore(url), new PocketStore(url), new PocketStore(url)] as const);
 
   it('lecture directe des collections : rien pour un utilisateur non connecté', async () => {
     const anonymous = new PocketStore(url).pb;

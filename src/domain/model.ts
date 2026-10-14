@@ -59,6 +59,8 @@ export interface EventInfo {
   privacy: PrivacyPolicy;
   /** Date de la purge des données personnelles ; l'événement ne garde alors que son bilan (F-77). */
   purgedAt: Iso | null;
+  /** Code d'accès des agents à cet événement seul (F-04) ; null s'il est désactivé. */
+  accessCode: string | null;
 }
 
 export interface Participant {

@@ -44,6 +44,9 @@ const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String
 const clip = (v: unknown, max: number) => str(v).trim().slice(0, max);
 /** Jeton de QR code : 160 bits tirés d'un générateur cryptographique (F-25). */
 const newToken = () => $security.randomStringWithAlphabet(40, '0123456789abcdef');
+/** Code d'accès des agents (F-04) : 8 caractères faciles à dicter, sans 0/O ni 1/I/L. */
+const newAccessCode = () => $security.randomStringWithAlphabet(8, 'ABCDEFGHJKMNPQRSTUVWXYZ23456789');
+const normCode = (v: unknown) => str(v).trim().toUpperCase().replace(/[\s-]/g, '');
 
 function ids(r: PbRecord, field: string): string[] {
   const list = r.getStringSlice(field);
@@ -80,6 +83,7 @@ function toEvent(r: PbRecord): EventInfo {
     registrationOpen: r.getBool('registrationOpen'), createdAt: r.getString('createdAt'),
     privacy: normalizePrivacy(parseJson(r, 'privacy', {}), defaultPrivacy()),
     purgedAt: r.getString('purgedAt') || null,
+    accessCode: r.getString('accessCode') || null,
   };
 }
 
@@ -161,12 +165,19 @@ function requireOrg(app: PbApp, e: PbRequestEvent, orgId: string, action: Action
 }
 
 /** Pour qui n'est pas membre de son organisation, un événement n'existe pas (NF-24). */
+/** Rôle dans l'organisation de l'événement, ou agent s'il l'a rejoint avec son code (F-04). */
+function eventRole(org: PbRecord, event: PbRecord, userId: string): Role | null {
+  return roleIn(org, userId) ?? (ids(event, 'agents').indexOf(userId) >= 0 ? 'agent' : null);
+}
+
 function requireEvent(app: PbApp, e: PbRequestEvent, eventId: string, action: Action) {
   const user = requireUser(e);
   const event = find(app, 'events', eventId);
   const org = event && find(app, 'organizations', event.getString('org'));
-  if (!event || !org || !roleIn(org, user.id)) return fail('not-found', 'Événement introuvable');
-  return { event, ...requireOrg(app, e, org.id, action) };
+  const role = event && org ? eventRole(org, event, user.id) : null;
+  if (!event || !org || !role) return fail('not-found', 'Événement introuvable');
+  if (!can(role, action)) fail('forbidden', 'Votre rôle ne permet pas cette action');
+  return { event, org, user, role };
 }
 
 function requireParticipant(app: PbApp, e: PbRequestEvent, id: string, action: Action) {
@@ -193,6 +204,9 @@ function sessionOf(app: PbApp, user: PbRecord): Session {
     memberships: orgs
       .map((o) => ({ orgId: o.id, orgName: o.getString('name'), role: roleIn(o, user.id)! }))
       .sort((a, b) => a.orgName.localeCompare(b.orgName, 'fr')),
+    eventAccess: findBy(app, 'events', 'agents.id ?= {:u}', { u: user.id }, '-startDate')
+      .filter((ev) => orgs.every((o) => o.id !== ev.getString('org')))
+      .map((ev) => ({ eventId: ev.id, eventName: ev.getString('name'), startDate: ev.getString('startDate'), endDate: ev.getString('endDate') })),
   };
 }
 
@@ -250,7 +264,8 @@ export function signUp(e: PbRequestEvent) {
     user.set('name', name);
     user.setPassword(str(input.password));
     app.save(user);
-    createOrg(app, input.organization, user.id);
+    // Sans nom d'organisation : agent qui rejoindra un événement avec son code (F-04)
+    if (clip(input.organization, 200)) createOrg(app, input.organization, user.id);
   });
   e.json(201, { ok: true });
 }
@@ -347,7 +362,7 @@ function newEvent(app: PbApp, orgId: string, input: NewEvent): EventInfo {
     id: '', orgId, name: str(input.name), startDate: str(input.startDate), endDate: str(input.endDate),
     venue: str(input.venue), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
     types: DEFAULT_TYPES, registrationOpen: false, createdAt: nowIso(),
-    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null,
+    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null, accessCode: null,
   });
 }
 
@@ -628,6 +643,50 @@ export function syncOffline(e: PbRequestEvent) {
     newDuplicates,
   };
   e.json(200, result);
+}
+
+// ─── Agents par code d'accès (F-04) ──────────────────────────────────
+
+export function joinEvent(e: PbRequestEvent) {
+  const user = requireUser(e);
+  const code = normCode(body(e).code);
+  $app.runInTransaction((app) => {
+    const event = code ? findBy(app, 'events', "accessCode = {:c} && purgedAt = ''", { c: code })[0] : undefined;
+    if (!event) return fail('not-found', 'Code d\'accès inconnu ou désactivé');
+    const org = app.findRecordById('organizations', event.getString('org'));
+    if (!eventRole(org, event, user.id)) {
+      event.set('agents', [...ids(event, 'agents'), user.id]);
+      app.save(event);
+    }
+  });
+  e.json(200, sessionOf($app, user));
+}
+
+export function setAccessCode(e: PbRequestEvent) {
+  const enabled = body(e).enabled === true;
+  let result: EventInfo | null = null;
+  $app.runInTransaction((app) => {
+    const { event } = requireEvent(app, e, e.request.pathValue('id'), 'event.edit');
+    if (enabled) requireNotPurged(event);
+    let code = '';
+    while (enabled && (!code || findBy(app, 'events', 'accessCode = {:c}', { c: code }).length)) code = newAccessCode();
+    event.set('accessCode', code);
+    // Désactiver le code retire l'accès de tous ceux qui l'ont utilisé (code divulgué)
+    if (!enabled) event.set('agents', []);
+    app.save(event);
+    result = toEvent(event);
+  });
+  e.json(200, result);
+}
+
+export function listEventAgents(e: PbRequestEvent) {
+  const { event } = requireEvent($app, e, e.request.pathValue('id'), 'event.edit');
+  const agents: Member[] = [];
+  for (const id of ids(event, 'agents')) {
+    const u = find($app, 'users', id);
+    if (u) agents.push({ userId: id, email: u.email(), name: u.getString('name'), role: 'agent' });
+  }
+  e.json(200, agents.sort((a, b) => a.name.localeCompare(b.name, 'fr')));
 }
 
 // ─── Protection des données (NF-32 à NF-34, F-77, RG-09) ─────────────

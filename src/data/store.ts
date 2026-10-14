@@ -19,9 +19,18 @@ export interface Membership {
   role: Role;
 }
 
+/** Événement rejoint avec son code d'accès (F-04), hors de toute organisation : rôle d'agent d'accueil. */
+export interface EventAccess {
+  eventId: string;
+  eventName: string;
+  startDate: string;
+  endDate: string;
+}
+
 export interface Session {
   user: User;
   memberships: Membership[];
+  eventAccess: EventAccess[];
 }
 
 /** Membre d'une organisation, vu par son propriétaire. */
@@ -36,7 +45,7 @@ export interface SignUpInput {
   name: string;
   email: string;
   password: string;
-  /** Nom de la première organisation, dont le nouvel utilisateur devient propriétaire. */
+  /** Nom de la première organisation, dont le nouvel utilisateur devient propriétaire ; vide pour un agent qui rejoindra un événement avec son code. */
   organization: string;
 }
 
@@ -48,7 +57,7 @@ export interface NewEvent {
   capacity?: number;
 }
 
-export type EventPatch = Partial<Omit<EventInfo, 'id' | 'orgId' | 'createdAt' | 'privacy' | 'purgedAt'>> & {
+export type EventPatch = Partial<Omit<EventInfo, 'id' | 'orgId' | 'createdAt' | 'privacy' | 'purgedAt' | 'accessCode'>> & {
   privacy?: Partial<PrivacyPolicy>;
 };
 
@@ -182,6 +191,14 @@ export interface EventStore {
   getRegistrationInfo(eventId: string): Promise<RegistrationInfo | null>;
   register(eventId: string, form: RegistrationForm): Promise<{ token: string }>;
   getAccessPage(token: string): Promise<AccessPage | null>;
+
+  // Agents rejoignant un événement par code (F-04)
+  /** L'utilisateur connecté rejoint l'événement du code comme agent d'accueil. */
+  joinEvent(code: string): Promise<Session>;
+  /** Active (nouveau code) ou désactive le code ; le désactiver retire l'accès de ceux qui l'ont utilisé. */
+  setAccessCode(eventId: string, enabled: boolean): Promise<EventInfo>;
+  /** Agents ayant rejoint l'événement avec son code. */
+  listEventAgents(eventId: string): Promise<Member[]>;
 
   // Protection des données (NF-32 à NF-34, F-77, RG-09)
   /** Politique appliquée aux nouveaux événements de l'organisation. */

@@ -26,7 +26,7 @@ const toEvent = (r: RecordModel): EventInfo => ({
   id: r.id, orgId: r.org, name: r.name, startDate: r.startDate, endDate: r.endDate, venue: r.venue,
   capacity: r.capacity, thresholds: r.thresholds ?? DEFAULT_THRESHOLDS, types: r.types ?? DEFAULT_TYPES,
   registrationOpen: r.registrationOpen, createdAt: r.createdAt,
-  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null,
+  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null, accessCode: r.accessCode || null,
 });
 
 const toParticipant = (r: RecordModel): Participant => ({
@@ -244,6 +244,21 @@ export class PocketStore implements EventStore {
     return this.orNull(() => this.call<AccessPage>('GET', `/api/ec/public/access/${encodeURIComponent(token)}`));
   }
 
+  // ── Agents par code d'accès ────────────────────────────────────────
+
+  async joinEvent(code: string) {
+    this.session = await this.call<Session>('POST', '/api/ec/join', { code });
+    return this.session;
+  }
+
+  setAccessCode(eventId: string, enabled: boolean) {
+    return this.call<EventInfo>('PUT', `/api/ec/events/${encodeURIComponent(eventId)}/access-code`, { enabled });
+  }
+
+  listEventAgents(eventId: string) {
+    return this.call<Member[]>('GET', `/api/ec/events/${encodeURIComponent(eventId)}/agents`);
+  }
+
   // ── Protection des données ─────────────────────────────────────────
 
   getOrgPrivacy(orgId: string) {
@@ -349,7 +364,8 @@ export class PocketStore implements EventStore {
       merge(participants, parts, toParticipant);
       merge(passages, pass, toPassage);
       merge(refusals, refs, toRefusal);
-      role = session?.memberships.find((m) => m.orgId === event!.orgId)?.role ?? null;
+      role = session?.memberships.find((m) => m.orgId === event!.orgId)?.role
+        ?? (session?.eventAccess.some((a) => a.eventId === eventId) ? 'agent' : null); // rejoint avec son code (F-04)
     };
 
     // Événement introuvable ou inaccessible : null. Toute autre erreur (réseau, serveur surchargé,

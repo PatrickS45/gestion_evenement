@@ -11,7 +11,7 @@ function twoStations() {
     listen: (fn) => { handlers.push({ owner, fn }); },
   });
   const lock = queueLock();
-  return [new LocalStore(storage, bus(1), lock), new LocalStore(storage, bus(2), lock)] as const;
+  return [new LocalStore(storage, bus(1), lock), new LocalStore(storage, bus(2), lock), new LocalStore(storage, bus(3), lock)] as const;
 }
 
 describeStoreContract('LocalStore', async () => twoStations());

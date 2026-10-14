@@ -14,7 +14,7 @@ import { anonymousReport, type EventReport, type ReportReason } from '../domain/
 import { parisDay } from '../domain/time';
 import { DEFAULT_TYPES } from '../domain/colors';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
-import { newId, newToken } from '../domain/ids';
+import { newAccessCode, newId, newToken } from '../domain/ids';
 import { hashPassword, PASSWORD_MIN_LENGTH, verifyPassword } from './password';
 import {
   StoreError,
@@ -41,11 +41,13 @@ interface Db {
   reports: (EventReport & { orgId: string })[];
   /** Traces des actions sur les données personnelles (RG-09). */
   audit: AuditEntry[];
+  /** Agents ayant rejoint un événement avec son code (F-04). */
+  eventAgents: { eventId: string; userId: string }[];
 }
 
 const EMPTY: Db = {
   version: 2, users: {}, organizations: {}, memberships: [], events: {}, participants: {}, passages: [], refusals: [],
-  orgPrivacy: {}, reports: [], audit: [],
+  orgPrivacy: {}, reports: [], audit: [], eventAgents: [],
 };
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const normEmail = (email: string) => email.trim().toLowerCase();
@@ -121,6 +123,7 @@ export class LocalStore implements EventStore {
       for (const e of Object.values(db.events)) {
         e.privacy = normalizePrivacy(e.privacy, defaultPrivacy(db.organizations[e.orgId]?.name ?? ''));
         e.purgedAt ??= null;
+        e.accessCode ??= null;
       }
       return db;
     }
@@ -142,7 +145,7 @@ export class LocalStore implements EventStore {
   private snapshot(db: Db, eventId: string): EventSnapshot | null {
     const event = db.events[eventId];
     const user = this.sessionUser(db);
-    const role = event && user ? this.roleIn(db, user.id, event.orgId) : null;
+    const role = event && user ? this.eventRole(db, user.id, event) : null;
     if (!event || !role) return null;
     return {
       event,
@@ -173,6 +176,12 @@ export class LocalStore implements EventStore {
     return db.memberships.find((m) => m.userId === userId && m.orgId === orgId)?.role ?? null;
   }
 
+  /** Rôle dans l'organisation de l'événement, ou agent s'il l'a rejoint avec son code (F-04). */
+  private eventRole(db: Db, userId: string, event: EventInfo): Role | null {
+    return this.roleIn(db, userId, event.orgId)
+      ?? (db.eventAgents.some((a) => a.eventId === event.id && a.userId === userId) ? 'agent' : null);
+  }
+
   private requireUser(db: Db): StoredUser {
     const user = this.sessionUser(db);
     if (!user) throw new StoreError('unauthenticated', 'Connectez-vous pour continuer');
@@ -192,8 +201,9 @@ export class LocalStore implements EventStore {
   private requireEvent(db: Db, id: string, action: Action): EventInfo {
     const user = this.requireUser(db);
     const e = db.events[id];
-    if (!e || !this.roleIn(db, user.id, e.orgId)) throw new StoreError('not-found', 'Événement introuvable');
-    this.requireRole(db, e.orgId, action);
+    const role = e && this.eventRole(db, user.id, e);
+    if (!e || !role) throw new StoreError('not-found', 'Événement introuvable');
+    if (!can(role, action)) throw new StoreError('forbidden', 'Votre rôle ne permet pas cette action');
     return e;
   }
 
@@ -233,6 +243,12 @@ export class LocalStore implements EventStore {
         .filter((m) => m.userId === user.id && db.organizations[m.orgId])
         .map((m) => ({ orgId: m.orgId, orgName: db.organizations[m.orgId]!.name, role: m.role }))
         .sort((a, b) => a.orgName.localeCompare(b.orgName, 'fr')),
+      eventAccess: db.eventAgents
+        .filter((a) => a.userId === user.id && db.events[a.eventId])
+        .map((a) => db.events[a.eventId]!)
+        .filter((e) => !this.roleIn(db, user.id, e.orgId))
+        .map((e) => ({ eventId: e.id, eventName: e.name, startDate: e.startDate, endDate: e.endDate }))
+        .sort((a, b) => b.startDate.localeCompare(a.startDate)),
     };
   }
 
@@ -274,9 +290,12 @@ export class LocalStore implements EventStore {
       }
       const u: StoredUser = { id: newId(), email, name: input.name.trim().slice(0, 100), passwordHash };
       db.users[u.id] = u;
-      const org = this.newOrganization(db, input.organization, u.id);
-      // Événements créés avant l'arrivée des comptes : rattachés à la première organisation créée
-      for (const e of Object.values(db.events)) if (!e.orgId) e.orgId = org.id;
+      // Sans nom d'organisation : agent qui rejoindra un événement avec son code (F-04)
+      if (input.organization.trim()) {
+        const org = this.newOrganization(db, input.organization, u.id);
+        // Événements créés avant l'arrivée des comptes : rattachés à la première organisation créée
+        for (const e of Object.values(db.events)) if (!e.orgId) e.orgId = org.id;
+      }
       return u;
     });
     this.session.set(SESSION_KEY, user.id);
@@ -372,7 +391,7 @@ export class LocalStore implements EventStore {
         id: newId(), orgId, name, startDate: input.startDate, endDate: input.endDate,
         venue: (input.venue ?? '').trim(), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
         types: DEFAULT_TYPES, registrationOpen: false, createdAt: this.nowIso(),
-        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null,
+        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null, accessCode: null,
       };
       db.events[event.id] = event;
       return event;
@@ -404,6 +423,7 @@ export class LocalStore implements EventStore {
   async deleteEvent(id: string) {
     await this.transaction([id], (db) => {
       const event = this.requireEvent(db, id, 'event.delete');
+      db.eventAgents = db.eventAgents.filter((a) => a.eventId !== id);
       // Bilan anonyme enregistré avant toute suppression de données (F-77)
       const count = event.purgedAt ? 0 : this.keepReport(db, event, 'deletion').registered;
       this.audit(db, event, 'event.delete', count);
@@ -598,6 +618,45 @@ export class LocalStore implements EventStore {
       type: e.types.find((t) => t.id === p.typeId) ?? null, token: p.token, entryCount: p.entryCount,
       privacy: publicPrivacy(e),
     };
+  }
+
+  // ── Agents par code d'accès (F-04) ─────────────────────────────────
+
+  async joinEvent(code: string) {
+    const t = this.now().getTime();
+    this.failures = this.failures.filter((x) => t - x < FAILURE_WINDOW_MS);
+    if (this.failures.length >= MAX_FAILURES) throw new StoreError('forbidden', 'Trop de tentatives, réessayez dans une minute');
+    const normalized = code.trim().toUpperCase().replace(/[\s-]/g, '');
+    const eventId = await this.transaction([], (db) => {
+      const user = this.requireUser(db);
+      const event = normalized && Object.values(db.events).find((e) => e.accessCode === normalized && !e.purgedAt);
+      if (!event) { this.failures.push(t); throw new StoreError('not-found', 'Code d\'accès inconnu ou désactivé'); }
+      if (!this.eventRole(db, user.id, event)) db.eventAgents.push({ eventId: event.id, userId: user.id });
+      return event.id;
+    });
+    this.emit(eventId);
+    return (await this.getSession())!;
+  }
+
+  async setAccessCode(eventId: string, enabled: boolean) {
+    return this.transaction([eventId], (db) => {
+      const event = this.requireEvent(db, eventId, 'event.edit');
+      if (enabled && event.purgedAt) throw new StoreError('closed', 'Les données de cet événement ont été purgées');
+      let code: string | null = null;
+      while (enabled && (!code || Object.values(db.events).some((e) => e.accessCode === code))) code = newAccessCode();
+      // Désactiver le code retire l'accès de tous ceux qui l'ont utilisé (code divulgué)
+      if (!enabled) db.eventAgents = db.eventAgents.filter((a) => a.eventId !== eventId);
+      return (db.events[eventId] = { ...event, accessCode: code });
+    });
+  }
+
+  async listEventAgents(eventId: string): Promise<Member[]> {
+    const db = this.read();
+    this.requireEvent(db, eventId, 'event.edit');
+    return db.eventAgents
+      .filter((a) => a.eventId === eventId && db.users[a.userId])
+      .map((a) => { const u = db.users[a.userId]!; return { userId: u.id, email: u.email, name: u.name, role: 'agent' as const }; })
+      .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
   }
 
   // ── Protection des données (NF-32 à NF-34, F-77, RG-09) ────────────
