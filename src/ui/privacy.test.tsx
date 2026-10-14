@@ -41,3 +41,15 @@ describe('affichage de la protection des données', () => {
     expect(html).toContain('50 % des visiteurs arrivés à');
   });
 });
+
+describe('apparence des pages publiques (F-14)', () => {
+  it('applique la couleur ajustée et affiche le logo avec un texte de remplacement', async () => {
+    const { BrandLogo, brandStyle } = await import('./branding');
+    const style = brandStyle({ color: '#ffd400', logo: null }) as Record<string, string>;
+    expect(style['--accent']).toMatch(/^#[0-9a-f]{6}$/);
+    expect(style['--accent']).not.toBe('#ffd400'); // trop clair : assombri
+    expect(brandStyle({ color: null, logo: null })).toBeUndefined();
+    const html = renderToStaticMarkup(<BrandLogo branding={{ color: null, logo: 'data:image/png;base64,iVBORw0KGgo=' }} organizer="Salon Pro" />);
+    expect(html).toContain('alt="Logo de Salon Pro"');
+  });
+});

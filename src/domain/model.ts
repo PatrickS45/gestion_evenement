@@ -1,4 +1,5 @@
 // Modèle métier (cahier des charges, section 7). Aucune dépendance technique.
+import type { Branding } from './branding';
 import type { Answers, CustomField } from './fields';
 import type { PrivacyPolicy } from './privacy';
 
@@ -69,6 +70,8 @@ export interface EventInfo {
   requireApproval: boolean;
   /** Champs personnalisés du formulaire (F-33). */
   fields: CustomField[];
+  /** Couleur et logo de l'organisateur sur les pages publiques (F-14). */
+  branding: Branding;
 }
 
 export interface Participant {

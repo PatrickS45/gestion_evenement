@@ -11,6 +11,7 @@ import { parisDay } from '../domain/time';
 import { QrImage, TypeBadge } from '../ui/components';
 import { longDay, PrivacyFields } from '../ui/privacy';
 import { FieldsEditor } from '../ui/fields';
+import { BrandingEditor } from '../ui/branding';
 
 export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
@@ -195,6 +196,13 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
         {error && <p role="alert" className="error">{error}</p>}
         <div><button className="btn" type="submit">Enregistrer</button></div>
       </form>
+
+      <section className="card stack" aria-labelledby="branding-title">
+        <h2 id="branding-title" style={{ marginBottom: 0 }}>Apparence des pages publiques</h2>
+        <p className="muted">Couleur et logo de l'organisateur, sur le formulaire d'inscription et la page de chaque participant. Une couleur trop claire est assombrie pour rester lisible.</p>
+        <BrandingEditor key={event.id} value={event.branding} disabled={purged}
+          onSave={async (branding) => { await store.updateEvent(event.id, { branding }); notify('Apparence enregistrée'); }} />
+      </section>
 
       <section className="card stack" aria-labelledby="fields-title">
         <h2 id="fields-title" style={{ marginBottom: 0 }}>Questions du formulaire</h2>
