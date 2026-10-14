@@ -10,6 +10,7 @@ import { Settings } from './Settings';
 import { Exports } from './Exports';
 import { StationBar } from '../ui/StationBar';
 import { RetentionBanner } from '../ui/privacy';
+import { GaugeAlerts } from '../ui/GaugeAlerts';
 
 /** Sections et droit requis pour les voir : l'agent d'accueil n'a accès qu'au direct et au scan. */
 const SECTIONS: readonly { id: string; label: string; requires: Action }[] = [
@@ -59,6 +60,7 @@ export function EventShell({ eventId, section }: { eventId: string; section: str
       </nav>
       <StationBar eventId={eventId} />
       <RetentionBanner event={event} role={snapshot.role} />
+      {!event.purgedAt && <GaugeAlerts key={event.id} event={event} present={snapshot.participants.filter((p) => p.inside).length} />}
       <main className="page">
         <h1 className="sr-only">{current.label} – {event.name}</h1>
         {current.id === 'direct' && <Live snapshot={snapshot} />}
