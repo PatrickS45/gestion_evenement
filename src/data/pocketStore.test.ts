@@ -1,53 +1,18 @@
 // Suite de contrat rejouée contre un vrai serveur PocketBase (base temporaire, hooks compilés).
 // Ignorée si le binaire n'est pas installé : npm run server:install.
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { EventSource } from 'eventsource';
 import { PocketStore } from './pocketStore';
 import { describeStoreContract } from './storeContract';
+import { serverInstalled, startTestServer, type TestServer } from './testServer';
 
-const root = fileURLToPath(new URL('../..', import.meta.url));
-const binary = join(root, 'server/bin', process.platform === 'win32' ? 'pocketbase.exe' : 'pocketbase');
-const installed = existsSync(binary);
-const port = 18000 + Math.floor(Math.random() * 1000);
-const url = `http://127.0.0.1:${port}`;
+let server: TestServer | undefined;
+let url = '';
 
-let server: ChildProcess | undefined;
-let dataDir = '';
-
-if (installed) {
-  (globalThis as { EventSource?: unknown }).EventSource ??= EventSource; // temps réel sous Node
-
-  beforeAll(async () => {
-    execFileSync(process.execPath, [join(root, 'scripts/build-hooks.mjs')]);
-    dataDir = mkdtempSync(join(tmpdir(), 'event-control-pb-'));
-    const dirs = [`--dir=${dataDir}`, `--hooksDir=${join(root, 'server/pb_hooks')}`, `--migrationsDir=${join(root, 'server/pb_migrations')}`];
-    execFileSync(binary, ['migrate', 'up', ...dirs]);
-    execFileSync(binary, ['superuser', 'upsert', 'admin@test.local', 'superuser-de-test', ...dirs]);
-    server = spawn(binary, ['serve', `--http=127.0.0.1:${port}`, ...dirs], { stdio: 'ignore' });
-
-    for (let i = 0; ; i++) {
-      try { if ((await fetch(`${url}/api/health`)).ok) break; } catch { /* pas encore démarré */ }
-      if (i > 100) throw new Error('PocketBase ne démarre pas');
-      await new Promise((r) => setTimeout(r, 100));
-    }
-
-    // Les tests créent de nombreux comptes depuis la même adresse : limitation désactivée
-    const admin = new PocketStore(url).pb;
-    await admin.collection('_superusers').authWithPassword('admin@test.local', 'superuser-de-test');
-    await admin.settings.update({ rateLimits: { enabled: false } });
-  }, 60_000);
-
-  afterAll(() => {
-    server?.kill();
-    if (dataDir) rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-  });
+if (serverInstalled) {
+  beforeAll(async () => { server = await startTestServer(); url = server.url; }, 60_000);
+  afterAll(() => server?.stop());
 }
 
-describe.skipIf(!installed)('PocketStore (serveur)', () => {
+describe.skipIf(!serverInstalled)('PocketStore (serveur)', () => {
   describeStoreContract('PocketStore', async () => [new PocketStore(url), new PocketStore(url)] as const);
 
   it('lecture directe des collections : rien pour un utilisateur non connecté', async () => {

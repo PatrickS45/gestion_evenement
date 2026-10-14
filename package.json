@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:charge": "vitest run --mode charge --silent=false",
     "typecheck": "tsc --noEmit && tsc --noEmit -p server",
     "server": "node scripts/pocketbase.mjs serve",
     "server:install": "node scripts/pocketbase.mjs install",

@@ -39,6 +39,24 @@ Puis copier `.env.example` en `.env.local` et relancer `npm run dev`. Les requê
 par Vite vers PocketBase : un téléphone du réseau local n'a besoin que de l'adresse du poste de
 développement (`npm run dev -- --host`). L'administration de PocketBase est sur http://127.0.0.1:8090/_/.
 
+### Test de charge (NF-05)
+
+```
+npm run test:charge
+```
+
+Il simule le pic du premier client sur un serveur temporaire, configuré comme en production : 1 100 participants,
+2 postes et 400 arrivées, avec des badges lus au même instant sur les deux postes, des QR codes inconnus, des
+sorties et des retours. Il vérifie qu'aucun scan n'échoue, que la base, les deux postes et l'écran Direct
+affichent les mêmes comptes, et que les délais sont tenus : scan en moins de 1 s, propagation en moins de 3 s.
+Il affiche un rapport chiffré.
+
+- `CHARGE_MINUTES=30` répartit les arrivées sur 30 minutes, au rythme du jour J.
+- `CHARGE_URL=https://…` vise un serveur déjà en ligne, pour la recette. Les comptes de test y restent ;
+  l'événement de test est supprimé à la fin.
+
+Sous PowerShell : `$env:CHARGE_MINUTES=30; npm run test:charge`.
+
 ## Organisation du code
 
 | Dossier | Contenu |
