@@ -7,6 +7,14 @@ import { ColumnChart, TypeBadge } from './components';
 const pct = (part: number, total: number) => `${total ? Math.round((part / total) * 100) : 0} %`;
 const longDate = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 const noon = (day: string) => `${day}T12:00:00Z`;
+const time = (iso: string | null) => (iso ? parisTime(iso) : '—');
+
+/** « 2 h 05 », « 45 min ». */
+export function duration(minutes: number | null): string {
+  if (minutes === null) return '—';
+  const h = Math.floor(minutes / 60), m = Math.round(minutes % 60);
+  return h ? `${h} h ${String(m).padStart(2, '0')}` : `${m} min`;
+}
 
 export function ReportView({ report, headingLevel = 2 }: { report: EventReport; headingLevel?: 2 | 3 }) {
   const H = `h${headingLevel}` as const;
@@ -64,6 +72,39 @@ export function ReportView({ report, headingLevel = 2 }: { report: EventReport; 
           </div>
         </section>
       )}
+
+      {report.days.map((d, i) => d.flow && (
+        <section key={`flow-${d.day}`} className="card stack" aria-labelledby={id(`flow-${i}`)}>
+          <Sub id={id(`flow-${i}`)} style={{ marginBottom: 0 }}>Affluence et comportement — jour {i + 1} ({parisShortDate(noon(d.day))})</Sub>
+          <dl className="grid" style={{ margin: 0 }}>
+            {([
+              ['Première arrivée', time(d.flow.firstArrival)],
+              ['Dernière arrivée', time(d.flow.lastArrival)],
+              ['50 % des visiteurs arrivés à', time(d.flow.half)],
+              ['90 % des visiteurs arrivés à', time(d.flow.ninety)],
+              ['Durée moyenne de présence', duration(d.flow.averageStayMinutes)],
+              ['Entrées par visiteur', d.flow.averageEntries === null ? '—' : d.flow.averageEntries.toLocaleString('fr-FR')],
+            ] as const).map(([label, value]) => (
+              <div key={label}><dt className="muted">{label}</dt><dd className="big-number" style={{ fontSize: 26, margin: 0 }}>{value}</dd></div>
+            ))}
+          </dl>
+          {d.flow.arrivalsByQuarter.length > 0 && <>
+            <p className="label">Arrivées par quart d'heure</p>
+            <ColumnChart values={d.flow.arrivalsByQuarter.map((q) => q.count)} labels={d.flow.arrivalsByQuarter.map((q) => parisTime(q.start))}
+              summary={`${d.flow.arrivals} arrivées le jour ${i + 1}, de ${time(d.flow.firstArrival)} à ${time(d.flow.lastArrival)}.`} />
+          </>}
+          {d.flow.exitsByHour.some((n) => n > 0) && (() => {
+            const hours = d.flow.exitsByHour.map((n, h) => ({ h, n }));
+            const from = hours.find((x) => x.n > 0)!.h, to = [...hours].reverse().find((x) => x.n > 0)!.h;
+            const shown = hours.slice(from, to + 1);
+            return <>
+              <p className="label">Sorties par heure (hors clôture de journée)</p>
+              <ColumnChart values={shown.map((x) => x.n)} labels={shown.map((x) => `${x.h} h`)}
+                summary={`Sorties par heure le jour ${i + 1}, de ${from} h à ${to} h.`} />
+            </>;
+          })()}
+        </section>
+      ))}
 
       {report.days.map((d, i) => {
         if (d.curve.length === 0) return null;

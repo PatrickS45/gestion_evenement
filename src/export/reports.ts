@@ -2,6 +2,7 @@
 import type { EventSnapshot } from '../data/store';
 import { replayPassages } from '../domain/attendance';
 import { fullName, type Participant, type ScanMethod } from '../domain/model';
+import { controlStats, dailyFlows } from '../domain/stats';
 import { floorQuarter, parisDay, parisTime, QUARTER_MS, toMs } from '../domain/time';
 import type { Cell, Sheet } from './spreadsheet';
 
@@ -70,8 +71,9 @@ export function byTypeSheet(s: EventSnapshot): Sheet {
 /** Entrées, sorties et présence maximale par quart d'heure, pour chaque journée. */
 export function attendanceSheet(s: EventSnapshot): Sheet {
   const replay = replayPassages(s.passages);
-  const rows: Cell[][] = [[H('Journée'), H('Tranche'), H('Entrées'), H('Sorties'), H('Présence maximale')]];
+  const rows: Cell[][] = [[H('Journée'), H('Tranche'), H('Arrivées'), H('Entrées'), H('Sorties'), H('Présence maximale')]];
   const counted = s.passages.filter((p) => !p.offlineDuplicate);
+  const flows = new Map(dailyFlows(s.passages).map((f) => [f.day, f]));
   for (const day of replay.days) {
     const points = replay.timeline.filter((p) => parisDay(p.at) === day.day);
     if (points.length === 0) continue;
@@ -84,11 +86,58 @@ export function attendanceSheet(s: EventSnapshot): Sheet {
       const inSlot = counted.filter((p) => { const t = toMs(p.at); return t >= start && t < start + QUARTER_MS; });
       rows.push([
         dayLabel(day.day), `${parisTime(start)} – ${parisTime(start + QUARTER_MS)}`,
+        flows.get(day.day)?.arrivalsByQuarter.find((q) => q.start === start)?.count ?? 0,
         inSlot.filter((p) => p.direction === 'in').length, inSlot.filter((p) => p.direction === 'out').length, max,
       ]);
     }
   }
-  return { name: 'Affluence', widths: [12, 16, 10, 10, 18], rows };
+  return { name: 'Affluence', widths: [12, 16, 10, 10, 10, 18], rows };
+}
+
+const clock = (t: number | null) => (t === null ? '' : parisTime(t));
+const minutes = (ms: number | null) => (ms === null ? '' : Math.round(ms / 60_000));
+
+/** Affluence et comportement par journée (F-71, F-72). */
+export function behaviourSheet(s: EventSnapshot): Sheet {
+  const flows = dailyFlows(s.passages);
+  const rows: Cell[][] = [
+    [H('Journée'), H('Arrivées'), H('Première arrivée'), H('Dernière arrivée'), H('50 % arrivés à'), H('90 % arrivés à'), H('Présence moyenne (min)'), H('Entrées par visiteur')],
+    ...flows.map((f) => [
+      dayLabel(f.day), f.arrivals, clock(f.firstArrival), clock(f.lastArrival), clock(f.half), clock(f.ninety),
+      minutes(f.averageStayMs), f.averageEntries === null ? '' : Math.round(f.averageEntries * 100) / 100,
+    ]),
+    [],
+    [H('Sorties par heure (hors clôture)'), ...flows.map((f) => H(dayLabel(f.day)))],
+    ...Array.from({ length: 24 }, (_, h) => h)
+      .filter((h) => flows.some((f) => f.exitsByHour[h]! > 0))
+      .map((h) => [`${h} h – ${h + 1} h`, ...flows.map((f) => f.exitsByHour[h]!)]),
+  ];
+  return { name: 'Comportement', widths: [30, 12, 16, 16, 14, 14, 20, 18], rows };
+}
+
+/** Contrôle (F-74) : scans par agent et par poste, moyens d'identification, refus et doublons. */
+export function controlSheet(s: EventSnapshot): Sheet {
+  const c = controlStats(s.passages, s.refusals);
+  return {
+    name: 'Contrôle',
+    widths: [26, 12, 12, 12],
+    rows: [
+      [H('Agent'), H('Entrées'), H('Sorties'), H('Refus')],
+      ...c.byAgent.map((a) => [a.agentName, a.entries, a.exits, a.refusals]),
+      [],
+      [H('Poste'), H('Entrées'), H('Sorties'), H('Refus')],
+      ...c.byStation.map((x) => [x.stationId, x.entries, x.exits, x.refusals]),
+      [],
+      [H("Moyen d'identification"), H('Scans')],
+      ...(Object.keys(METHODS) as ScanMethod[]).map((m) => [METHODS[m], c.byMethod[m]]),
+      [],
+      [H('Contrôle'), H('Nombre')],
+      ['QR codes inconnus', c.refusals.unknown],
+      ['Refus « déjà dans la salle »', c.refusals.alreadyInside],
+      ['Passages enregistrés hors ligne', c.offline],
+      ['Doublons hors ligne écartés', c.offlineDuplicates],
+    ],
+  };
 }
 
 export function participantsSheet(s: EventSnapshot): Sheet {
@@ -140,7 +189,10 @@ export function refusalsSheet(s: EventSnapshot): Sheet {
 }
 
 export function fullWorkbook(s: EventSnapshot, exportedAt = new Date()): Sheet[] {
-  return [summarySheet(s, exportedAt), byTypeSheet(s), attendanceSheet(s), participantsSheet(s), passagesSheet(s), refusalsSheet(s)];
+  return [
+    summarySheet(s, exportedAt), byTypeSheet(s), attendanceSheet(s), behaviourSheet(s), controlSheet(s),
+    participantsSheet(s), passagesSheet(s), refusalsSheet(s),
+  ];
 }
 
 /** Listes CSV : présents en ce moment, jamais venus. */

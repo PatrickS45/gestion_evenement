@@ -3,6 +3,7 @@
 // Module exécuté aussi par le serveur (hooks PocketBase, sans Intl).
 import { quarterCurve, replayPassages } from './attendance';
 import type { EventInfo, Iso, Participant, ParticipantType, Passage, Refusal } from './model';
+import { dailyFlows } from './stats';
 
 export type ReportReason = 'purge' | 'deletion';
 
@@ -15,6 +16,21 @@ export interface ReportDay {
   peakAt: Iso | null;
   /** Présence maximale par quart d'heure. */
   curve: { start: Iso; present: number }[];
+  /** Affluence et comportement (F-71, F-72) ; absents des bilans enregistrés avant leur ajout. */
+  flow?: ReportFlow;
+}
+
+export interface ReportFlow {
+  arrivals: number;
+  arrivalsByQuarter: { start: Iso; count: number }[];
+  firstArrival: Iso | null;
+  lastArrival: Iso | null;
+  half: Iso | null;
+  ninety: Iso | null;
+  /** Sorties par heure de Paris, 0 à 23, hors clôture de journée. */
+  exitsByHour: number[];
+  averageStayMinutes: number | null;
+  averageEntries: number | null;
 }
 
 export interface EventReport {
@@ -36,6 +52,18 @@ export interface EventReport {
 }
 
 const iso = (t: number | null) => (t === null ? null : new Date(t).toISOString());
+
+function flowOf(f: ReturnType<typeof dailyFlows>[number] | undefined): ReportFlow | undefined {
+  if (!f) return undefined;
+  return {
+    arrivals: f.arrivals,
+    arrivalsByQuarter: f.arrivalsByQuarter.map((q) => ({ start: new Date(q.start).toISOString(), count: q.count })),
+    firstArrival: iso(f.firstArrival), lastArrival: iso(f.lastArrival), half: iso(f.half), ninety: iso(f.ninety),
+    exitsByHour: f.exitsByHour,
+    averageStayMinutes: f.averageStayMs === null ? null : Math.round(f.averageStayMs / 60_000),
+    averageEntries: f.averageEntries === null ? null : Math.round(f.averageEntries * 100) / 100,
+  };
+}
 const normalizeCompany = (c: string) => c.trim().toLowerCase().replace(/\s+/g, ' ');
 
 export function anonymousReport(
@@ -47,6 +75,7 @@ export function anonymousReport(
   reason: ReportReason,
 ): EventReport {
   const replay = replayPassages(passages);
+  const flows = new Map(dailyFlows(passages).map((f) => [f.day, f]));
   return {
     eventId: event.id,
     eventName: event.name,
@@ -69,6 +98,7 @@ export function anonymousReport(
     days: replay.days.map((d) => ({
       day: d.day, entries: d.entries, exits: d.exits, visitors: d.visitors, peak: d.peak, peakAt: iso(d.peakAt),
       curve: quarterCurve(replay.timeline, d.day, 0).map((c) => ({ start: new Date(c.start).toISOString(), present: c.present })),
+      flow: flowOf(flows.get(d.day)),
     })),
     refusals: refusals.length,
     offlineDuplicates: passages.filter((p) => p.offlineDuplicate).length,
