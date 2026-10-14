@@ -116,15 +116,26 @@ export function Access({ token }: { token: string }) {
       <div className="public-card stack" style={{ alignItems: 'center', textAlign: 'center' }}>
         {justRegistered && (
           <p role="status" className="notice notice-ok" style={{ width: '100%' }}>
-            Inscription confirmée. Gardez cette page : ajoutez-la à vos favoris ou faites une capture d'écran.
+            {page.status === 'pending'
+              ? 'Inscription enregistrée. Gardez le lien de cette page : ajoutez-la à vos favoris.'
+              : 'Inscription confirmée. Gardez cette page : ajoutez-la à vos favoris ou faites une capture d\'écran.'}
           </p>
         )}
         <p className="muted" style={{ fontWeight: 600 }}>{page.eventName}</p>
         <h1 style={{ fontSize: 26 }}>{[page.firstName, page.lastName].filter(Boolean).join(' ')}</h1>
         {page.company && <p className="muted">{page.company}</p>}
         {page.type && <TypeBadge type={page.type} large />}
-        <QrImage text={page.token} size={260} label="Votre QR code d'accès" />
-        <p>Présentez ce QR code <strong>à chaque entrée et à chaque sortie</strong>.</p>
+        {page.status === 'pending'
+          ? (
+            <p className="notice notice-info" role="status" style={{ width: '100%' }}>
+              Inscription reçue, en attente de validation par l'organisateur. Revenez sur cette page :
+              votre QR code d'accès s'affichera dès qu'elle sera acceptée.
+            </p>
+          )
+          : <>
+            <QrImage text={page.token} size={260} label="Votre QR code d'accès" />
+            <p>Présentez ce QR code <strong>à chaque entrée et à chaque sortie</strong>.</p>
+          </>}
         <p className="small">
           {page.startDate === page.endDate ? longDate(page.startDate) : `Du ${longDate(page.startDate)} au ${longDate(page.endDate)}`}
           {page.venue && <><br />{page.venue}</>}

@@ -84,6 +84,7 @@ function toEvent(r: PbRecord): EventInfo {
     privacy: normalizePrivacy(parseJson(r, 'privacy', {}), defaultPrivacy()),
     purgedAt: r.getString('purgedAt') || null,
     accessCode: r.getString('accessCode') || null,
+    requireApproval: r.getBool('requireApproval'),
   };
 }
 
@@ -102,6 +103,7 @@ function toParticipant(r: PbRecord): Participant {
     phone: r.getString('phone'), company: r.getString('company'), typeId: r.getString('typeId'),
     token: r.getString('token'), tokenRevoked: r.getBool('tokenRevoked'),
     source: r.getString('source') as Participant['source'],
+    status: r.getString('status') === 'pending' ? 'pending' : 'accepted',
     consentAt: r.getString('consentAt') || null, createdAt: r.getString('createdAt'),
     inside: r.getBool('inside'), entryCount: r.getInt('entryCount'),
     firstEntryAt: r.getString('firstEntryAt') || null, lastMoveAt: r.getString('lastMoveAt') || null,
@@ -113,6 +115,7 @@ function writeParticipant(r: PbRecord, p: Participant) {
   r.set('event', p.eventId);
   for (const k of ['firstName', 'lastName', 'email', 'phone', 'company', 'typeId', 'token', 'source', 'createdAt'] as const) r.set(k, p[k]);
   r.set('tokenRevoked', p.tokenRevoked);
+  r.set('status', p.status);
   r.set('consentAt', p.consentAt ?? '');
   r.set('inside', p.inside);
   r.set('entryCount', p.entryCount);
@@ -351,6 +354,7 @@ function saveEvent(app: PbApp, r: PbRecord, ev: EventInfo) {
   r.set('registrationOpen', ev.registrationOpen);
   r.set('createdAt', ev.createdAt);
   r.set('privacy', ev.privacy);
+  r.set('requireApproval', ev.requireApproval);
   r.set('purgedAt', ev.purgedAt ?? '');
   app.save(r);
   return toEvent(r);
@@ -362,7 +366,7 @@ function newEvent(app: PbApp, orgId: string, input: NewEvent): EventInfo {
     id: '', orgId, name: str(input.name), startDate: str(input.startDate), endDate: str(input.endDate),
     venue: str(input.venue), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
     types: DEFAULT_TYPES, registrationOpen: false, createdAt: nowIso(),
-    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null, accessCode: null,
+    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null, accessCode: null, requireApproval: false,
   });
 }
 
@@ -396,6 +400,7 @@ export function updateEvent(e: PbRequestEvent) {
   if (patch.types !== undefined) next.types = (patch.types ?? []).map((t) => ({ id: clip(t.id, 60), label: clip(t.label, 60), color: clip(t.color, 7) }));
   if (patch.registrationOpen !== undefined) next.registrationOpen = !!patch.registrationOpen;
   if (patch.privacy !== undefined) next.privacy = normalizePrivacy(patch.privacy, current.privacy);
+  if (patch.requireApproval !== undefined) next.requireApproval = !!patch.requireApproval;
   if (next.registrationOpen && current.purgedAt) fail('closed', 'Les données de cet événement ont été purgées');
   if (!next.types.length) fail('invalid', 'Il faut au moins un type de participant');
   e.json(200, saveEvent($app, event, next));
@@ -428,14 +433,14 @@ export function deleteEvent(e: PbRequestEvent) {
 
 // ─── Participants (F-20 à F-26) ──────────────────────────────────────
 
-function buildParticipant(eventId: string, input: NewParticipant): Participant {
+function buildParticipant(eventId: string, input: NewParticipant, status: Participant['status'] = 'accepted'): Participant {
   return {
     id: '', eventId,
     firstName: clip(input.firstName, 100), lastName: clip(input.lastName, 100),
     email: normEmail(input.email).slice(0, 320), phone: clip(input.phone, 40),
     company: str(input.company).replace(/\s+/g, ' ').trim().slice(0, 120),
     typeId: str(input.typeId), token: newToken(), tokenRevoked: false,
-    source: input.source, consentAt: input.consentAt ?? null, createdAt: nowIso(),
+    source: input.source, status, consentAt: input.consentAt ?? null, createdAt: nowIso(),
     inside: false, entryCount: 0, firstEntryAt: null, lastMoveAt: null,
   };
 }
@@ -489,6 +494,14 @@ export function updateParticipant(e: PbRequestEvent) {
     result = next;
   });
   e.json(200, result);
+}
+
+export function acceptParticipant(e: PbRequestEvent) {
+  const { participant } = requireParticipant($app, e, e.request.pathValue('id'), 'participants.manage');
+  const p = { ...toParticipant(participant), status: 'accepted' as const };
+  writeParticipant(participant, p);
+  $app.save(participant);
+  e.json(200, p);
 }
 
 export function deleteParticipant(e: PbRequestEvent) {
@@ -859,7 +872,7 @@ export function register(e: PbRequestEvent) {
     token = insertParticipant(app, buildParticipant(eventId, {
       firstName: str(form.firstName), lastName: str(form.lastName), email, phone: str(form.phone),
       company: str(form.company), typeId: str(form.typeId), source: 'form', consentAt: nowIso(),
-    })).token;
+    }, event.requireApproval ? 'pending' : 'accepted')).token;
   });
   e.json(201, { token });
 }
@@ -875,7 +888,9 @@ export function accessPage(e: PbRequestEvent) {
   const page: AccessPage = {
     eventName: event.name, startDate: event.startDate, endDate: event.endDate, venue: event.venue,
     firstName: p.firstName, lastName: p.lastName, company: p.company,
-    type: event.types.find((t) => t.id === p.typeId) ?? null, token: p.token, entryCount: p.entryCount,
+    type: event.types.find((t) => t.id === p.typeId) ?? null, entryCount: p.entryCount,
+    // Pas de QR code tant que l'inscription attend sa validation (F-37)
+    token: p.status === 'pending' ? '' : p.token, status: p.status,
     privacy: publicPrivacy(event),
   };
   e.json(200, page);

@@ -1,5 +1,5 @@
 // Fréquentation : rejeu du journal des passages (RG-01 à RG-05) et vue « Direct » (F-65).
-import type { EventInfo, Participant, ParticipantType, Passage } from './model';
+import { accepted, type EventInfo, type Participant, type ParticipantType, type Passage } from './model';
 import { floorQuarter, parisDay, QUARTER_MS, toMs } from './time';
 import { gaugeLevel, type GaugeLevel } from './gauge';
 import { offlineDuplicates, type DuplicateReport } from './offline';
@@ -129,7 +129,7 @@ export function liveView(event: EventInfo, participants: Participant[], passages
   const todayPassages = passages.filter((p) => !p.offlineDuplicate && parisDay(p.at) === todayKey);
 
   const byType = event.types.map((t): TypeLive => {
-    const ofType = participants.filter((p) => p.typeId === t.id);
+    const ofType = accepted(participants).filter((p) => p.typeId === t.id);
     return {
       ...t,
       registered: ofType.length,

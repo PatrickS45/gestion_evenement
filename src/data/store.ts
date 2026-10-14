@@ -3,7 +3,7 @@
 // (PocketBase, lot 2) sont interchangeables.
 import type { Role } from '../domain/access';
 import type {
-  Direction, EventInfo, Participant, ParticipantSource, ParticipantType, Passage, Refusal, ScanMethod, User,
+  Direction, EventInfo, Participant, ParticipantStatus, ParticipantSource, ParticipantType, Passage, Refusal, ScanMethod, User,
 } from '../domain/model';
 import type { SyncBatch, SyncResult } from '../domain/offline';
 import type { AuditEntry, ExportKind, PrivacyPolicy } from '../domain/privacy';
@@ -121,8 +121,10 @@ export interface AccessPage {
   lastName: string;
   company: string;
   type: ParticipantType | null;
+  /** Vide tant que l'inscription attend sa validation : le QR code n'est délivré qu'après (F-37). */
   token: string;
   entryCount: number;
+  status: ParticipantStatus;
   privacy: PublicPrivacy;
 }
 
@@ -177,6 +179,8 @@ export interface EventStore {
   updateParticipant(id: string, patch: ParticipantPatch): Promise<Participant>;
   deleteParticipant(id: string): Promise<void>;
   revokeToken(id: string): Promise<Participant>;
+  /** Accepte une inscription en attente (F-37) ; la refuser, c'est la supprimer. */
+  acceptParticipant(id: string): Promise<Participant>;
 
   // Scan (F-50 à F-59) — opérations atomiques ; l'agent est l'utilisateur connecté, `stationId` son poste
   scan(eventId: string, token: string, direction: Direction, method: ScanMethod, stationId: string): Promise<ScanResult>;

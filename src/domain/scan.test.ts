@@ -12,6 +12,10 @@ describe('decideScan — tableau F-52', () => {
     expect(decideScan(undefined, 'out')).toEqual({ result: 'refused', reason: 'unknown' });
   });
 
+  it('inscription en attente de validation : traitée comme inconnue (F-37)', () => {
+    expect(decideScan(makeParticipant({ status: 'pending' }), 'in')).toEqual({ result: 'refused', reason: 'unknown' });
+  });
+
   it('jeton révoqué : traité comme inconnu (RG-06)', () => {
     expect(decideScan(makeParticipant({ tokenRevoked: true }), 'in')).toEqual({ result: 'refused', reason: 'unknown' });
   });

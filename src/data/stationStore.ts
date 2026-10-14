@@ -444,6 +444,7 @@ export class StationStore implements EventStore {
   updateParticipant(id: string, patch: ParticipantPatch) { return this.inner.updateParticipant(id, patch); }
   deleteParticipant(id: string) { return this.inner.deleteParticipant(id); }
   revokeToken(id: string) { return this.inner.revokeToken(id); }
+  acceptParticipant(id: string) { return this.inner.acceptParticipant(id); }
   closeDay(eventId: string, stationId: string) { return this.inner.closeDay(eventId, stationId); }
   syncOffline(eventId: string, batch: SyncBatch) { return this.inner.syncOffline(eventId, batch); }
   getRegistrationInfo(eventId: string) { return this.inner.getRegistrationInfo(eventId); }

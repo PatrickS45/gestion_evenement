@@ -6,15 +6,16 @@ import { fullName, type Participant } from '../domain/model';
 import { previewImport, type ImportPreview } from '../domain/csvImport';
 import { download, fileSlug, Modal, QrImage, TypeBadge } from '../ui/components';
 
-type StatusFilter = 'all' | 'never' | 'inside' | 'left';
+type StatusFilter = 'all' | 'pending' | 'never' | 'inside' | 'left';
 const SHOWN = 200;
 
 function statusOf(p: Participant): Exclude<StatusFilter, 'all'> {
+  if (p.status === 'pending') return 'pending';
   if (p.inside) return 'inside';
   return p.entryCount > 0 ? 'left' : 'never';
 }
 
-const STATUS_LABEL = { never: 'Jamais venu', inside: 'Dans la salle', left: 'Sorti' } as const;
+const STATUS_LABEL = { pending: 'En attente', never: 'Jamais venu', inside: 'Dans la salle', left: 'Sorti' } as const;
 
 const EMPTY_FORM = { firstName: '', lastName: '', email: '', phone: '', company: '', typeId: '' };
 
@@ -46,6 +47,13 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
     } catch (err) { notify(errorMessage(err), 'danger'); }
   };
 
+  const pending = participants.filter((p) => p.status === 'pending').length;
+
+  const accept = async (p: Participant) => {
+    try { await store.acceptParticipant(p.id); notify(`Inscription de ${fullName(p)} acceptée : son QR code est disponible sur sa page`); }
+    catch (err) { notify(errorMessage(err), 'danger'); }
+  };
+
   const remove = async (p: Participant) => {
     if (!confirm(`Supprimer ${fullName(p)} et toutes ses données, passages compris ? Cette action est tracée et définitive.`)) return;
     try { await store.deleteParticipant(p.id); notify(`${fullName(p)} supprimé(e)`); }
@@ -64,6 +72,13 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
 
       {showImport && <ImportPanel snapshot={snapshot} onDone={() => setShowImport(false)} />}
 
+      {pending > 0 && (
+        <p className="notice notice-info row-between" style={{ gap: 12 }}>
+          <span>{pending} inscription{pending > 1 ? 's' : ''} en attente de validation : le QR code n'est délivré qu'après acceptation.</span>
+          {status !== 'pending' && <button className="btn btn-secondary btn-small" onClick={() => setStatus('pending')}>Les afficher</button>}
+        </p>
+      )}
+
       <div className="card">
         <div className="form-grid" role="search">
           <div className="field">
@@ -81,6 +96,7 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
             <label htmlFor="status-filter">Statut</label>
             <select id="status-filter" className="input" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
               <option value="all">Tous</option>
+              {(pending > 0 || event.requireApproval) && <option value="pending">En attente de validation ({pending})</option>}
               <option value="never">Jamais venus</option>
               <option value="inside">Dans la salle</option>
               <option value="left">Sortis</option>
@@ -114,7 +130,9 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
                     </td>
                     <td>
                       <div className="row" style={{ flexWrap: 'nowrap' }}>
-                        <button className="btn btn-secondary btn-small" onClick={() => setQrFor(p)} aria-label={`QR code de ${fullName(p)}`}>QR</button>
+                        {p.status === 'pending'
+                          ? <button className="btn btn-small" onClick={() => void accept(p)} aria-label={`Accepter l'inscription de ${fullName(p)}`}>Accepter</button>
+                          : <button className="btn btn-secondary btn-small" onClick={() => setQrFor(p)} aria-label={`QR code de ${fullName(p)}`}>QR</button>}
                         <button className="btn btn-secondary btn-small" onClick={() => setEditing(p)} aria-label={`Modifier ${fullName(p)}`}>Modifier</button>
                         <button className="btn btn-secondary btn-small" onClick={() => void exportOne(p)} aria-label={`Exporter les données de ${fullName(p)}`}
                           title="Export des données de la personne, à sa demande">Ses données</button>

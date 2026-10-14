@@ -88,7 +88,7 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q.length < 2) return [];
-    return participants.filter((p) => `${p.firstName} ${p.lastName} ${p.company}`.toLowerCase().includes(q)).slice(0, 8);
+    return participants.filter((p) => p.status !== 'pending' && `${p.firstName} ${p.lastName} ${p.company}`.toLowerCase().includes(q)).slice(0, 8);
   }, [participants, query]);
 
   const resultType = result?.participant ? typeById.get(result.participant.typeId) : undefined;

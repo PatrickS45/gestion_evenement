@@ -349,6 +349,30 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
       await expect(a.register(event.id, { ...form, email: 'lea@x.fr' })).rejects.toMatchObject({ code: 'duplicate' });
     });
 
+    it("validation manuelle : en attente, pas de QR code, refusé au scan, hors des inscrits, jusqu'à acceptation (F-37)", async () => {
+      const { a, b, event } = await setup();
+      await a.updateEvent(event.id, { registrationOpen: true, requireApproval: true, privacy: { contact: 'dpo@salon.fr' } });
+      const { token } = await a.register(event.id, form);
+      expect(await a.getAccessPage(token)).toMatchObject({ status: 'pending', token: '', firstName: 'Sophie' });
+
+      const sophie = (await snapshotOf(a, event.id))!.participants.find((p) => p.email === 'sophie@x.fr')!;
+      expect(sophie).toMatchObject({ status: 'pending', source: 'form' });
+      expect((await b.scan(event.id, sophie.token, 'in', 'camera', 'entree')).decision).toEqual({ result: 'refused', reason: 'unknown' });
+      await expect(b.acceptParticipant(sophie.id)).rejects.toMatchObject({ code: 'forbidden' }); // agent
+
+      expect(await a.acceptParticipant(sophie.id)).toMatchObject({ status: 'accepted' });
+      expect(await a.getAccessPage(token)).toMatchObject({ status: 'accepted', token });
+      expect((await b.scan(event.id, sophie.token, 'in', 'camera', 'entree')).decision.result).toBe('accepted');
+    });
+
+    it('sans validation manuelle, une inscription est acceptée aussitôt ; les ajouts par l\'équipe le sont toujours', async () => {
+      const { a, event, lea } = await setup();
+      await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });
+      const { token } = await a.register(event.id, form);
+      expect(await a.getAccessPage(token)).toMatchObject({ status: 'accepted', token });
+      expect(lea.status).toBe('accepted');
+    });
+
     it('refuse une inscription dont le champ piège est rempli (F-36)', async () => {
       const { a, event } = await setup();
       await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });

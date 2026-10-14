@@ -124,6 +124,10 @@ export class LocalStore implements EventStore {
         e.privacy = normalizePrivacy(e.privacy, defaultPrivacy(db.organizations[e.orgId]?.name ?? ''));
         e.purgedAt ??= null;
         e.accessCode ??= null;
+        e.requireApproval ??= false;
+      }
+      for (const p of Object.values(db.participants)) {
+        p.status ??= 'accepted';
       }
       return db;
     }
@@ -219,7 +223,7 @@ export class LocalStore implements EventStore {
     return !!e && Object.values(db.participants).some((p) => p.eventId === eventId && p.id !== exceptId && p.email === e);
   }
 
-  private buildParticipant(eventId: string, input: NewParticipant): Participant {
+  private buildParticipant(eventId: string, input: NewParticipant, status: Participant['status'] = 'accepted'): Participant {
     return {
       id: newId(), eventId,
       firstName: input.firstName.trim().slice(0, 100),
@@ -229,7 +233,7 @@ export class LocalStore implements EventStore {
       company: (input.company ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
       typeId: input.typeId,
       token: newToken(), tokenRevoked: false,
-      source: input.source, consentAt: input.consentAt ?? null, createdAt: this.nowIso(),
+      source: input.source, status, consentAt: input.consentAt ?? null, createdAt: this.nowIso(),
       inside: false, entryCount: 0, firstEntryAt: null, lastMoveAt: null,
     };
   }
@@ -391,7 +395,7 @@ export class LocalStore implements EventStore {
         id: newId(), orgId, name, startDate: input.startDate, endDate: input.endDate,
         venue: (input.venue ?? '').trim(), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
         types: DEFAULT_TYPES, registrationOpen: false, createdAt: this.nowIso(),
-        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null, accessCode: null,
+        privacy: this.orgPrivacyOf(db, orgId), purgedAt: null, accessCode: null, requireApproval: false,
       };
       db.events[event.id] = event;
       return event;
@@ -484,6 +488,15 @@ export class LocalStore implements EventStore {
     const eventId = this.requireParticipant(this.read(), id, 'participants.manage').eventId;
     return this.transaction([eventId], (db) => {
       const p = { ...this.requireParticipant(db, id, 'participants.manage'), token: newToken(), tokenRevoked: false };
+      db.participants[id] = p;
+      return p;
+    });
+  }
+
+  async acceptParticipant(id: string) {
+    const eventId = this.requireParticipant(this.read(), id, 'participants.manage').eventId;
+    return this.transaction([eventId], (db) => {
+      const p = { ...this.requireParticipant(db, id, 'participants.manage'), status: 'accepted' as const };
       db.participants[id] = p;
       return p;
     });
@@ -602,7 +615,8 @@ export class LocalStore implements EventStore {
       if (!event || !event.registrationOpen || event.purgedAt) throw new StoreError('closed', 'Les inscriptions sont fermées');
       if (!event.types.some((t) => t.id === form.typeId)) throw new StoreError('invalid', 'Profil invalide');
       if (this.emailTaken(db, eventId, form.email)) throw new StoreError('duplicate', 'Cette adresse email est déjà inscrite');
-      const p = this.buildParticipant(eventId, { ...form, source: 'form', consentAt: this.nowIso() });
+      const { website: _trap, ...fields } = form;
+      const p = this.buildParticipant(eventId, { ...fields, source: 'form', consentAt: this.nowIso() }, event.requireApproval ? 'pending' : 'accepted');
       db.participants[p.id] = p;
       return { token: p.token };
     });
@@ -616,7 +630,9 @@ export class LocalStore implements EventStore {
     return {
       eventName: e.name, startDate: e.startDate, endDate: e.endDate, venue: e.venue,
       firstName: p.firstName, lastName: p.lastName, company: p.company,
-      type: e.types.find((t) => t.id === p.typeId) ?? null, token: p.token, entryCount: p.entryCount,
+      type: e.types.find((t) => t.id === p.typeId) ?? null, entryCount: p.entryCount,
+      // Pas de QR code tant que l'inscription attend sa validation (F-37)
+      token: p.status === 'pending' ? '' : p.token, status: p.status,
       privacy: publicPrivacy(e),
     };
   }

@@ -2,7 +2,7 @@
 // Enregistré avant toute suppression de données (purge, suppression de l'événement) et conservé sans limite.
 // Module exécuté aussi par le serveur (hooks PocketBase, sans Intl).
 import { quarterCurve, replayPassages } from './attendance';
-import type { EventInfo, Iso, Participant, ParticipantType, Passage, Refusal } from './model';
+import { accepted, type EventInfo, type Iso, type Participant, type ParticipantType, type Passage, type Refusal } from './model';
 import { dailyFlows } from './stats';
 
 export type ReportReason = 'purge' | 'deletion';
@@ -74,6 +74,7 @@ export function anonymousReport(
   generatedAt: Iso,
   reason: ReportReason,
 ): EventReport {
+  participants = accepted(participants);
   const replay = replayPassages(passages);
   const flows = new Map(dailyFlows(passages).map((f) => [f.day, f]));
   return {

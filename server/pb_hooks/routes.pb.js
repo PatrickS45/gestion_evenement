@@ -46,6 +46,7 @@ routerAdd('POST', '/api/ec/events/{id}/sync', (e) => require(`${__hooks}/lib/ec.
 
 routerAdd('PATCH', '/api/ec/participants/{id}', (e) => require(`${__hooks}/lib/ec.cjs`).updateParticipant(e));
 routerAdd('DELETE', '/api/ec/participants/{id}', (e) => require(`${__hooks}/lib/ec.cjs`).deleteParticipant(e));
+routerAdd('POST', '/api/ec/participants/{id}/accept', (e) => require(`${__hooks}/lib/ec.cjs`).acceptParticipant(e));
 routerAdd('POST', '/api/ec/participants/{id}/token', (e) => require(`${__hooks}/lib/ec.cjs`).revokeToken(e));
 
 routerAdd('GET', '/api/ec/public/events/{id}', (e) => require(`${__hooks}/lib/ec.cjs`).registrationInfo(e));

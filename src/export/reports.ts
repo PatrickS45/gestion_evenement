@@ -1,7 +1,7 @@
 // Contenu des exports (F-75) : classeur complet et listes CSV.
 import type { EventSnapshot } from '../data/store';
 import { replayPassages } from '../domain/attendance';
-import { fullName, type Participant, type ScanMethod } from '../domain/model';
+import { accepted, fullName, type Participant, type ScanMethod } from '../domain/model';
 import { controlStats, dailyFlows } from '../domain/stats';
 import { floorQuarter, parisDay, parisTime, QUARTER_MS, toMs } from '../domain/time';
 import type { Cell, Sheet } from './spreadsheet';
@@ -20,12 +20,14 @@ function typeLabel(s: EventSnapshot, typeId: string) {
 }
 
 function status(p: Participant) {
+  if (p.status === 'pending') return 'En attente de validation';
   if (p.inside) return 'Dans la salle';
   return p.entryCount > 0 ? 'Sorti' : 'Jamais venu';
 }
 
 export function summarySheet(s: EventSnapshot, exportedAt: Date): Sheet {
-  const { event, participants, passages } = s;
+  const { event, passages } = s;
+  const participants = accepted(s.participants);
   const replay = replayPassages(passages);
   const came = participants.filter((p) => p.entryCount > 0).length;
   return {
@@ -59,7 +61,7 @@ export function byTypeSheet(s: EventSnapshot): Sheet {
     rows: [
       [H('Type'), H('Inscrits'), H('Venus'), H('Taux de venue'), H('Dans la salle'), H('Sociétés différentes')],
       ...s.event.types.map((t) => {
-        const ofType = s.participants.filter((p) => p.typeId === t.id);
+        const ofType = accepted(s.participants).filter((p) => p.typeId === t.id);
         const came = ofType.filter((p) => p.entryCount > 0).length;
         const companies = new Set(ofType.map((p) => p.company.trim().toLowerCase()).filter(Boolean)).size;
         return [t.label, ofType.length, came, pct(came, ofType.length), ofType.filter((p) => p.inside).length, companies];
@@ -197,7 +199,7 @@ export function fullWorkbook(s: EventSnapshot, exportedAt = new Date()): Sheet[]
 
 /** Listes CSV : présents en ce moment, jamais venus. */
 export function participantList(s: EventSnapshot, filter: 'inside' | 'never'): Cell[][] {
-  const list = s.participants.filter((p) => (filter === 'inside' ? p.inside : p.entryCount === 0));
+  const list = accepted(s.participants).filter((p) => (filter === 'inside' ? p.inside : p.entryCount === 0));
   return [
     ['Nom', 'Prénom', 'Type', 'Société', 'Email', 'Téléphone'],
     ...list.map((p) => [p.lastName, p.firstName, typeLabel(s, p.typeId), p.company, p.email, p.phone]),

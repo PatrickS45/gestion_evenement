@@ -86,6 +86,13 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
     } catch (err) { notify(errorMessage(err), 'danger'); }
   };
 
+  const toggleApproval = async () => {
+    try {
+      await store.updateEvent(event.id, { requireApproval: !event.requireApproval });
+      notify(event.requireApproval ? 'Inscriptions acceptées automatiquement' : 'Inscriptions validées manuellement');
+    } catch (err) { notify(errorMessage(err), 'danger'); }
+  };
+
   const duplicate = async () => {
     const name = prompt('Nom du nouvel événement (paramètres et types copiés, sans les participants) :', `${event.name} (copie)`);
     if (!name?.trim()) return;
@@ -108,7 +115,14 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
             <p>
               Inscriptions : <strong style={{ color: event.registrationOpen ? 'var(--ok)' : 'var(--danger)' }}>{event.registrationOpen ? 'ouvertes' : 'fermées'}</strong>
             </p>
-            <p className="muted">Les participants choisissent leur type, s'inscrivent et obtiennent aussitôt leur QR code. Imprimez ce QR code sur une affiche ou partagez le lien.</p>
+            <p className="muted">
+              Les participants choisissent leur type et s'inscrivent ; ils obtiennent leur QR code
+              {event.requireApproval ? ' après acceptation par un administrateur (onglet Participants).' : ' aussitôt.'} Imprimez ce QR code sur une affiche ou partagez le lien.
+            </p>
+            <label className="row" style={{ flexWrap: 'nowrap', cursor: 'pointer' }}>
+              <input type="checkbox" checked={event.requireApproval} onChange={() => void toggleApproval()} disabled={purged} />
+              <span>Valider manuellement chaque inscription avant de délivrer le QR code</span>
+            </label>
             {event.registrationOpen && <p className="small" style={{ wordBreak: 'break-all' }}>{registerUrl}</p>}
             {!event.registrationOpen && !purged && !privacyComplete(event.privacy) && (
               <p className="notice notice-warn">
