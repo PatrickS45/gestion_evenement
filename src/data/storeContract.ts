@@ -333,7 +333,7 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
 
     it('inscrit, renvoie un jeton et ne montre au participant que ses propres données', async () => {
       const { a, event } = await setup();
-      await a.updateEvent(event.id, { registrationOpen: true });
+      await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });
       const { token } = await a.register(event.id, form);
       const page = await a.getAccessPage(token);
       expect(page).toMatchObject({ eventName: 'Salon', firstName: 'Sophie', company: 'Maison Martin', entryCount: 0 });
@@ -344,9 +344,91 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
 
     it('exige le consentement et refuse un email déjà inscrit', async () => {
       const { a, event } = await setup();
-      await a.updateEvent(event.id, { registrationOpen: true });
+      await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });
       await expect(a.register(event.id, { ...form, consent: false })).rejects.toMatchObject({ code: 'invalid' });
       await expect(a.register(event.id, { ...form, email: 'lea@x.fr' })).rejects.toMatchObject({ code: 'duplicate' });
+    });
+  });
+
+  describe(`${name} — protection des données (NF-32 à NF-34, F-77, RG-09)`, () => {
+    it("politique de l'organisation reprise par ses nouveaux événements, et par les copies", async () => {
+      const { a, b, orgId, event } = await setup();
+      expect(event.privacy).toMatchObject({ controller: 'Salon Pro', contact: '', retentionMonths: 3, legalBasis: 'consent' });
+      await expect(b.setOrgPrivacy(orgId, { contact: 'x' })).rejects.toMatchObject({ code: 'forbidden' }); // agent
+      const policy = await a.setOrgPrivacy(orgId, { contact: 'dpo@salon.fr', retentionMonths: 6, legalBasis: 'contract' });
+      expect(await b.getOrgPrivacy(orgId)).toEqual(policy);
+      const next = await a.createEvent(orgId, { name: 'Salon 2028', startDate: '2028-03-09', endDate: '2028-03-10' });
+      expect(next.privacy).toEqual({ controller: 'Salon Pro', contact: 'dpo@salon.fr', legalBasis: 'contract', retentionMonths: 6, details: '' });
+      const updated = await a.updateEvent(next.id, { privacy: { details: 'Contrôle d\'accès au salon' } });
+      expect((await a.duplicateEvent(updated.id, 'Copie')).privacy.details).toBe('Contrôle d\'accès au salon');
+    });
+
+    it('inscriptions publiques impossibles sans contact pour les données ; politique et date de purge affichées au public', async () => {
+      const { a, event } = await setup();
+      await expect(a.updateEvent(event.id, { registrationOpen: true })).rejects.toMatchObject({ code: 'invalid' });
+      await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr', retentionMonths: 1 } });
+      const info = await a.getRegistrationInfo(event.id);
+      expect(info?.privacy).toMatchObject({ controller: 'Salon Pro', contact: 'dpo@salon.fr', retentionMonths: 1, purgeDay: '2027-04-12' });
+      const { token } = await a.register(event.id, { firstName: 'S', lastName: 'Martin', email: 's@x.fr', phone: '', company: '', typeId: 'magasin', consent: true });
+      expect((await a.getAccessPage(token))?.privacy.purgeDay).toBe('2027-04-12');
+    });
+
+    it("purge : bilan anonyme enregistré, données personnelles effacées, l'événement ne reçoit plus rien (NF-33, F-77)", async () => {
+      const { a, b, orgId, event, lea } = await setup();
+      await b.scan(event.id, lea.token, 'in', 'camera', 'entree');
+      await expect(b.purgeEvent(event.id)).rejects.toMatchObject({ code: 'forbidden' }); // agent
+      const report = await a.purgeEvent(event.id);
+      expect(report).toMatchObject({ eventId: event.id, eventName: 'Salon', registered: 2, came: 1, reason: 'purge', peak: { value: 1 } });
+      expect(JSON.stringify(report)).not.toMatch(/Léa|Petit|lea@x\.fr|Roy/);
+
+      const snap = (await snapshotOf(a, event.id))!;
+      expect(snap.event.purgedAt).toBe(report.generatedAt);
+      expect([snap.participants.length, snap.passages.length, snap.refusals.length]).toEqual([0, 0, 0]);
+      expect(await a.getAccessPage(lea.token)).toBeNull();
+      await expect(b.scan(event.id, lea.token, 'in', 'camera', 'entree')).rejects.toMatchObject({ code: 'closed' });
+      await expect(a.addParticipants(event.id, [{ firstName: 'X', lastName: 'Y', email: '', typeId: 'magasin', source: 'manual' }])).rejects.toMatchObject({ code: 'closed' });
+      await expect(a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } })).rejects.toMatchObject({ code: 'closed' });
+      await expect(a.purgeEvent(event.id)).rejects.toMatchObject({ code: 'closed' });
+      expect(await a.listReports(orgId)).toEqual([report]);
+    });
+
+    it('suppression d\'un événement : son bilan anonyme est conservé (F-77)', async () => {
+      const { a, orgId, event } = await setup();
+      await a.deleteEvent(event.id);
+      expect(await a.listReports(orgId)).toEqual([expect.objectContaining({ eventName: 'Salon', registered: 2, reason: 'deletion' })]);
+    });
+
+    it('trace les imports, exports, effacements et purges : qui, quand, combien (RG-09)', async () => {
+      const { a, b, orgId, event, lea, marc } = await setup(); // setup importe Marc (source « import »)
+      await a.logExport(event.id, 'workbook', 2);
+      await expect(a.logExport(event.id, 'autre' as never, 1)).rejects.toMatchObject({ code: 'invalid' });
+      await expect(b.logExport(event.id, 'workbook', 2)).rejects.toMatchObject({ code: 'forbidden' });
+      const record = await a.exportParticipant(marc.id);
+      await a.deleteParticipant(lea.id);
+      await a.purgeEvent(event.id);
+      await expect(b.listAudit(orgId)).rejects.toMatchObject({ code: 'forbidden' });
+      const trail = await a.listAudit(orgId);
+      expect(trail.map((t) => [t.action, t.count, t.actorName])).toEqual([
+        ['purge', 1, 'Claire Owner'],
+        ['participant.delete', 1, 'Claire Owner'],
+        ['participant.export', 1, 'Claire Owner'],
+        ['export', 2, 'Claire Owner'],
+        ['import', 1, 'Claire Owner'],
+      ]);
+      expect(trail[3]).toMatchObject({ eventId: event.id, eventName: 'Salon', detail: 'Classeur Excel complet' });
+      expect(record.eventName).toBe('Salon');
+    });
+
+    it("données d'une personne, à sa demande : tout ce qui la concerne, rien sur les agents (NF-34)", async () => {
+      const { a, b, event, lea } = await setup();
+      await b.scan(event.id, lea.token, 'in', 'camera', 'entree');
+      await b.scan(event.id, lea.token, 'in', 'camera', 'entree'); // refus « déjà présent »
+      await expect(b.exportParticipant(lea.id)).rejects.toMatchObject({ code: 'forbidden' });
+      const record = await a.exportParticipant(lea.id);
+      expect(record.participant).toMatchObject({ firstName: 'Léa', email: 'lea@x.fr', entryCount: 1 });
+      expect(record.passages).toEqual([expect.objectContaining({ direction: 'in', stationId: 'entree', origin: 'online' })]);
+      expect(record.refusals).toEqual([expect.objectContaining({ reason: 'already-inside', stationId: 'entree' })]);
+      expect(JSON.stringify(record)).not.toContain('Bruno');
     });
   });
 }

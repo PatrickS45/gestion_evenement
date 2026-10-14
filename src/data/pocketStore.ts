@@ -5,6 +5,8 @@ import PocketBase, { AsyncAuthStore, ClientResponseError, type RecordModel } fro
 import type { Role } from '../domain/access';
 import { DEFAULT_TYPES } from '../domain/colors';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
+import { defaultPrivacy, normalizePrivacy, type AuditEntry, type ExportKind, type PrivacyPolicy } from '../domain/privacy';
+import type { EventReport } from '../domain/report';
 import {
   compareNames, type Direction, type EventInfo, type Participant, type Passage, type Refusal, type ScanMethod,
 } from '../domain/model';
@@ -12,7 +14,7 @@ import { memoryKeyValue, type KeyValue } from './localStore';
 import {
   StoreError,
   type AccessPage, type EventPatch, type EventSnapshot, type EventStore, type Member, type NewEvent,
-  type NewParticipant, type ParticipantPatch, type RegistrationForm, type RegistrationInfo, type ScanResult,
+  type NewParticipant, type ParticipantPatch, type ParticipantRecord, type RegistrationForm, type RegistrationInfo, type ScanResult,
   type Session, type SignUpInput, type SyncBatch, type SyncResult,
 } from './store';
 
@@ -24,6 +26,7 @@ const toEvent = (r: RecordModel): EventInfo => ({
   id: r.id, orgId: r.org, name: r.name, startDate: r.startDate, endDate: r.endDate, venue: r.venue,
   capacity: r.capacity, thresholds: r.thresholds ?? DEFAULT_THRESHOLDS, types: r.types ?? DEFAULT_TYPES,
   registrationOpen: r.registrationOpen, createdAt: r.createdAt,
+  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null,
 });
 
 const toParticipant = (r: RecordModel): Participant => ({
@@ -241,6 +244,36 @@ export class PocketStore implements EventStore {
     return this.orNull(() => this.call<AccessPage>('GET', `/api/ec/public/access/${encodeURIComponent(token)}`));
   }
 
+  // ── Protection des données ─────────────────────────────────────────
+
+  getOrgPrivacy(orgId: string) {
+    return this.call<PrivacyPolicy>('GET', `/api/ec/orgs/${encodeURIComponent(orgId)}/privacy`);
+  }
+
+  setOrgPrivacy(orgId: string, privacy: Partial<PrivacyPolicy>) {
+    return this.call<PrivacyPolicy>('PUT', `/api/ec/orgs/${encodeURIComponent(orgId)}/privacy`, privacy);
+  }
+
+  purgeEvent(eventId: string) {
+    return this.call<EventReport>('POST', `/api/ec/events/${encodeURIComponent(eventId)}/purge`);
+  }
+
+  listReports(orgId: string) {
+    return this.call<EventReport[]>('GET', `/api/ec/orgs/${encodeURIComponent(orgId)}/reports`);
+  }
+
+  listAudit(orgId: string) {
+    return this.call<AuditEntry[]>('GET', `/api/ec/orgs/${encodeURIComponent(orgId)}/audit`);
+  }
+
+  async logExport(eventId: string, kind: ExportKind, count: number) {
+    await this.call('POST', `/api/ec/events/${encodeURIComponent(eventId)}/export-log`, { kind, count });
+  }
+
+  exportParticipant(id: string) {
+    return this.call<ParticipantRecord>('GET', `/api/ec/participants/${encodeURIComponent(id)}/export`);
+  }
+
   // ── Temps réel ─────────────────────────────────────────────────────
 
   subscribe(eventId: string, listener: (s: EventSnapshot | null) => void) {
@@ -287,14 +320,12 @@ export class PocketStore implements EventStore {
     ];
     for (const s of subscriptions) s.catch(() => undefined); // l'échec est traité par load()
 
-    // Après une coupure, le temps réel se reconnecte mais les changements intervenus entre-temps
-    // sont perdus : tout est rechargé à chaque reconnexion
-    let connections = 0;
+    // Les changements survenus sans connexion au temps réel sont perdus : tout est rechargé à chaque
+    // connexion qui suit le chargement. C'est le cas après une coupure, mais aussi quand l'abonnement est
+    // pris pendant une reconnexion : le client PocketBase ne l'attend pas, et le chargement la précède.
     let failed = false;
     const reconnected = this.pb.realtime.subscribe('PB_CONNECT', () => {
-      if (++connections > 1 && ready && !closed) {
-        load(true).then(() => { failed = false; emit(); }, () => undefined);
-      }
+      if (ready && !closed) load(true).then(() => { failed = false; emit(); }, () => undefined);
     });
     reconnected.catch(() => undefined);
 

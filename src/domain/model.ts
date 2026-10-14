@@ -1,4 +1,5 @@
 // Modèle métier (cahier des charges, section 7). Aucune dépendance technique.
+import type { PrivacyPolicy } from './privacy';
 
 /** Date et heure au format ISO 8601. */
 export type Iso = string;
@@ -54,6 +55,10 @@ export interface EventInfo {
   types: ParticipantType[];
   registrationOpen: boolean;
   createdAt: Iso;
+  /** Politique de confidentialité et durée de conservation (NF-32, NF-33). */
+  privacy: PrivacyPolicy;
+  /** Date de la purge des données personnelles ; l'événement ne garde alors que son bilan (F-77). */
+  purgedAt: Iso | null;
 }
 
 export interface Participant {

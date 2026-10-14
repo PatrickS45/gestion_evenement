@@ -4,12 +4,18 @@
 import { can, ROLES, type Action, type Role } from '../../src/domain/access';
 import { DEFAULT_TYPES } from '../../src/domain/colors';
 import { DEFAULT_THRESHOLDS } from '../../src/domain/gauge';
-import type { Direction, EventInfo, Participant, ParticipantType, Passage, ScanMethod } from '../../src/domain/model';
+import type { Direction, EventInfo, Participant, ParticipantType, Passage, Refusal, ScanMethod } from '../../src/domain/model';
+import {
+  defaultPrivacy, EXPORT_KINDS, EXPORT_LABELS, normalizePrivacy, privacyComplete, purgeDay, retentionState,
+  type AuditAction, type AuditEntry, type ExportKind, type PrivacyPolicy,
+} from '../../src/domain/privacy';
+import { anonymousReport, type EventReport, type ReportReason } from '../../src/domain/report';
+import { parisDay } from '../../src/domain/time';
 import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncResult, type SyncStatus } from '../../src/domain/offline';
 import { applyScan, decideScan } from '../../src/domain/scan';
 import type {
-  AccessPage, EventPatch, Member, NewEvent, NewParticipant, ParticipantPatch, RegistrationForm, RegistrationInfo,
-  ScanResult, Session, SignUpInput, StoreError,
+  AccessPage, EventPatch, Member, NewEvent, NewParticipant, ParticipantPatch, ParticipantRecord, PublicPrivacy,
+  RegistrationForm, RegistrationInfo, ScanResult, Session, SignUpInput, StoreError,
 } from '../../src/data/store';
 
 // ─── Erreurs ─────────────────────────────────────────────────────────
@@ -72,6 +78,16 @@ function toEvent(r: PbRecord): EventInfo {
     thresholds: parseJson(r, 'thresholds', DEFAULT_THRESHOLDS),
     types: parseJson<ParticipantType[]>(r, 'types', DEFAULT_TYPES),
     registrationOpen: r.getBool('registrationOpen'), createdAt: r.getString('createdAt'),
+    privacy: normalizePrivacy(parseJson(r, 'privacy', {}), defaultPrivacy()),
+    purgedAt: r.getString('purgedAt') || null,
+  };
+}
+
+function toRefusal(r: PbRecord): Refusal {
+  return {
+    id: r.id, eventId: r.getString('event'), reason: r.getString('reason') as Refusal['reason'], at: r.getString('at'),
+    agentId: r.getString('agentId'), agentName: r.getString('agentName'), stationId: r.getString('stationId'),
+    method: r.getString('method') as ScanMethod, participantId: r.getString('participantId') || null, sample: r.getString('sample'),
   };
 }
 
@@ -314,8 +330,13 @@ function saveEvent(app: PbApp, r: PbRecord, ev: EventInfo) {
   r.set('capacity', ev.capacity);
   r.set('thresholds', ev.thresholds);
   r.set('types', ev.types);
+  if (ev.registrationOpen && !privacyComplete(ev.privacy)) {
+    fail('invalid', "Renseignez le responsable du traitement et le contact pour les données personnelles avant d'ouvrir les inscriptions");
+  }
   r.set('registrationOpen', ev.registrationOpen);
   r.set('createdAt', ev.createdAt);
+  r.set('privacy', ev.privacy);
+  r.set('purgedAt', ev.purgedAt ?? '');
   app.save(r);
   return toEvent(r);
 }
@@ -326,7 +347,18 @@ function newEvent(app: PbApp, orgId: string, input: NewEvent): EventInfo {
     id: '', orgId, name: str(input.name), startDate: str(input.startDate), endDate: str(input.endDate),
     venue: str(input.venue), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
     types: DEFAULT_TYPES, registrationOpen: false, createdAt: nowIso(),
+    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null,
   });
+}
+
+/** Politique de l'organisation pour ses nouveaux événements ; à défaut, elle-même comme responsable. */
+function orgPrivacy(org: PbRecord): PrivacyPolicy {
+  return normalizePrivacy(parseJson(org, 'privacy', {}), defaultPrivacy(org.getString('name')));
+}
+
+/** Après la purge, l'événement ne garde que son bilan : plus aucune donnée personnelle n'y entre. */
+function requireNotPurged(event: PbRecord) {
+  if (event.getString('purgedAt')) fail('closed', 'Les données de cet événement ont été purgées');
 }
 
 export function createEvent(e: PbRequestEvent) {
@@ -348,6 +380,8 @@ export function updateEvent(e: PbRequestEvent) {
   if (patch.thresholds !== undefined) next.thresholds = { warn: Number(patch.thresholds.warn), critical: Number(patch.thresholds.critical) };
   if (patch.types !== undefined) next.types = (patch.types ?? []).map((t) => ({ id: clip(t.id, 60), label: clip(t.label, 60), color: clip(t.color, 7) }));
   if (patch.registrationOpen !== undefined) next.registrationOpen = !!patch.registrationOpen;
+  if (patch.privacy !== undefined) next.privacy = normalizePrivacy(patch.privacy, current.privacy);
+  if (next.registrationOpen && current.purgedAt) fail('closed', 'Les données de cet événement ont été purgées');
   if (!next.types.length) fail('invalid', 'Il faut au moins un type de participant');
   e.json(200, saveEvent($app, event, next));
 }
@@ -360,14 +394,20 @@ export function duplicateEvent(e: PbRequestEvent) {
     const created = newEvent(app, source.orgId, {
       name: str(body(e).name), startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity,
     });
-    copy = saveEvent(app, app.findRecordById('events', created.id), { ...created, types: source.types, thresholds: source.thresholds });
+    copy = saveEvent(app, app.findRecordById('events', created.id), { ...created, types: source.types, thresholds: source.thresholds, privacy: source.privacy });
   });
   e.json(201, copy);
 }
 
 export function deleteEvent(e: PbRequestEvent) {
-  const { event } = requireEvent($app, e, e.request.pathValue('id'), 'event.delete');
-  $app.delete(event); // participants, passages et refus suivent (suppression en cascade)
+  $app.runInTransaction((app) => {
+    const { event, user } = requireEvent(app, e, e.request.pathValue('id'), 'event.delete');
+    const ev = toEvent(event);
+    // Bilan anonyme enregistré avant toute suppression de données (F-77)
+    const count = ev.purgedAt ? 0 : keepReport(app, event, 'deletion').registered;
+    audit(app, ev, user, 'event.delete', count);
+    app.delete(event); // participants, passages et refus suivent (suppression en cascade)
+  });
   e.noContent(204);
 }
 
@@ -397,7 +437,8 @@ export function addParticipants(e: PbRequestEvent) {
   const eventId = e.request.pathValue('id');
   const added: Participant[] = [];
   $app.runInTransaction((app) => {
-    const { event } = requireEvent(app, e, eventId, 'participants.manage');
+    const { event, user } = requireEvent(app, e, eventId, 'participants.manage');
+    requireNotPurged(event);
     const types = toEvent(event).types;
     for (const input of list) {
       if (!str(input.firstName).trim() && !str(input.lastName).trim()) fail('invalid', 'Nom manquant');
@@ -408,6 +449,8 @@ export function addParticipants(e: PbRequestEvent) {
       const source = (['manual', 'import', 'form'] as const).indexOf(input.source) >= 0 ? input.source : 'manual';
       added.push(insertParticipant(app, buildParticipant(eventId, { ...input, typeId, source })));
     }
+    const imported = added.filter((p) => p.source === 'import').length;
+    if (imported) audit(app, toEvent(event), user, 'import', imported); // RG-09
   });
   e.json(201, added);
 }
@@ -434,8 +477,11 @@ export function updateParticipant(e: PbRequestEvent) {
 }
 
 export function deleteParticipant(e: PbRequestEvent) {
-  const { participant } = requireParticipant($app, e, e.request.pathValue('id'), 'participants.manage');
-  $app.delete(participant); // ses passages suivent (RG-08)
+  $app.runInTransaction((app) => {
+    const { participant, event, user } = requireParticipant(app, e, e.request.pathValue('id'), 'participants.manage');
+    audit(app, toEvent(event), user, 'participant.delete', 1); // NF-34
+    app.delete(participant); // ses passages suivent (RG-08)
+  });
   e.noContent(204);
 }
 
@@ -459,7 +505,8 @@ export function scan(e: PbRequestEvent) {
   if (DIRECTIONS.indexOf(direction) < 0 || METHODS.indexOf(method) < 0) fail('invalid', 'Requête de scan invalide');
   let result: ScanResult | null = null;
   $app.runInTransaction((app) => {
-    const { user } = requireEvent(app, e, eventId, 'scan');
+    const { user, event } = requireEvent(app, e, eventId, 'scan');
+    requireNotPurged(event);
     const record = token ? findBy(app, 'participants', 'event = {:event} && token = {:token}', { event: eventId, token })[0] : undefined;
     const participant = record ? toParticipant(record) : undefined;
     const decision = decideScan(participant, direction);
@@ -493,7 +540,8 @@ export function closeDay(e: PbRequestEvent) {
   const stationId = clip(body(e).stationId, 60);
   let count = 0;
   $app.runInTransaction((app) => {
-    const { user } = requireEvent(app, e, eventId, 'day.close');
+    const { user, event } = requireEvent(app, e, eventId, 'day.close');
+    requireNotPurged(event);
     const at = nowIso();
     for (const record of findBy(app, 'participants', 'event = {:event} && inside = true', { event: eventId })) {
       const p = toParticipant(record);
@@ -526,7 +574,8 @@ export function syncOffline(e: PbRequestEvent) {
   let newDuplicates = 0;
 
   $app.runInTransaction((app) => {
-    const { user } = requireEvent(app, e, eventId, 'scan');
+    const { user, event } = requireEvent(app, e, eventId, 'scan');
+    requireNotPurged(event);
     const nowMs = Date.now();
     const base = { eventId, agentId: user.id, agentName: user.getString('name'), stationId: clip(input.stationId, 60) };
 
@@ -581,13 +630,155 @@ export function syncOffline(e: PbRequestEvent) {
   e.json(200, result);
 }
 
+// ─── Protection des données (NF-32 à NF-34, F-77, RG-09) ─────────────
+
+function publicPrivacy(ev: EventInfo): PublicPrivacy {
+  return { ...ev.privacy, purgeDay: purgeDay(ev) };
+}
+
+/** Trace d'une action sur des données personnelles ; `user` absent pour la purge automatique. */
+function audit(app: PbApp, ev: EventInfo, user: PbRecord | null, action: AuditAction, count: number, detail = '') {
+  const r = new Record(app.findCollectionByNameOrId('audit'));
+  r.set('org', ev.orgId);
+  r.set('eventId', ev.id);
+  r.set('eventName', ev.name);
+  r.set('actorId', user?.id ?? '');
+  r.set('actorName', user ? user.getString('name') : 'Purge automatique');
+  r.set('action', action);
+  r.set('count', count);
+  r.set('detail', clip(detail, 200));
+  r.set('at', nowIso());
+  app.save(r);
+}
+
+function toAudit(r: PbRecord): AuditEntry {
+  return {
+    id: r.id, orgId: r.getString('org'), eventId: r.getString('eventId'), eventName: r.getString('eventName'),
+    actorId: r.getString('actorId'), actorName: r.getString('actorName'), action: r.getString('action') as AuditAction,
+    count: r.getInt('count'), detail: r.getString('detail'), at: r.getString('at'),
+  };
+}
+
+/** Bilan anonyme de l'événement, enregistré pour être conservé sans limite (F-77). */
+function keepReport(app: PbApp, event: PbRecord, reason: ReportReason): EventReport {
+  const ev = toEvent(event);
+  const filter = 'event = {:e}';
+  const report = anonymousReport(
+    ev,
+    findBy(app, 'participants', filter, { e: ev.id }).map(toParticipant),
+    findBy(app, 'passages', filter, { e: ev.id }).map(toPassage),
+    findBy(app, 'refusals', filter, { e: ev.id }).map(toRefusal),
+    nowIso(), reason,
+  );
+  const r = new Record(app.findCollectionByNameOrId('reports'));
+  r.set('org', ev.orgId);
+  r.set('eventId', ev.id);
+  r.set('report', report);
+  r.set('createdAt', report.generatedAt);
+  app.save(r);
+  return report;
+}
+
+/** Purge des données personnelles d'un événement : participants, passages, refus. L'événement et son bilan restent. */
+function purge(app: PbApp, event: PbRecord, user: PbRecord | null): EventReport {
+  const report = keepReport(app, event, 'purge');
+  const filter = 'event = {:e}';
+  for (const r of findBy(app, 'refusals', filter, { e: event.id })) app.delete(r);
+  for (const r of findBy(app, 'participants', filter, { e: event.id })) app.delete(r); // passages en cascade
+  event.set('purgedAt', report.generatedAt);
+  event.set('registrationOpen', false);
+  app.save(event);
+  audit(app, toEvent(event), user, 'purge', report.registered, user ? 'Purge demandée' : 'Échéance de conservation');
+  return report;
+}
+
+export function purgeEvent(e: PbRequestEvent) {
+  let report: EventReport | null = null;
+  $app.runInTransaction((app) => {
+    const { event, user } = requireEvent(app, e, e.request.pathValue('id'), 'event.delete');
+    requireNotPurged(event);
+    report = purge(app, event, user);
+  });
+  e.json(200, report);
+}
+
+/** Purge automatique des événements arrivés à échéance de conservation (NF-33). Renvoie leur nombre. */
+export function purgeDue(today = parisDay(Date.now())): number {
+  let count = 0;
+  for (const event of findBy($app, 'events', "purgedAt = ''", {})) {
+    if (retentionState(toEvent(event), today) !== 'due') continue;
+    $app.runInTransaction((app) => { purge(app, app.findRecordById('events', event.id), null); });
+    count++;
+  }
+  return count;
+}
+
+/** Déclenchement manuel de la purge automatique, réservé à l'administration du serveur (tests, exploitation). */
+export function purgeDueRoute(e: PbRequestEvent) {
+  if (!e.auth || e.auth.collection().name !== '_superusers') fail('forbidden', 'Réservé à l\'administration du serveur');
+  const today = str(body(e).today);
+  e.json(200, { purged: purgeDue(/^\d{4}-\d{2}-\d{2}$/.test(today) ? today : undefined) });
+}
+
+export function getOrgPrivacy(e: PbRequestEvent) {
+  const { org } = requireOrg($app, e, e.request.pathValue('org'), 'scan');
+  e.json(200, orgPrivacy(org));
+}
+
+export function setOrgPrivacy(e: PbRequestEvent) {
+  const { org } = requireOrg($app, e, e.request.pathValue('org'), 'event.edit');
+  const next = normalizePrivacy(body(e), orgPrivacy(org));
+  org.set('privacy', next);
+  $app.save(org);
+  e.json(200, next);
+}
+
+export function listReports(e: PbRequestEvent) {
+  const { org } = requireOrg($app, e, e.request.pathValue('org'), 'stats.export');
+  e.json(200, findBy($app, 'reports', 'org = {:o}', { o: org.id }, '-createdAt').map((r) => parseJson<EventReport | null>(r, 'report', null)).filter(Boolean));
+}
+
+export function listAudit(e: PbRequestEvent) {
+  const { org } = requireOrg($app, e, e.request.pathValue('org'), 'stats.export');
+  e.json(200, findBy($app, 'audit', 'org = {:o}', { o: org.id }, '-at').map(toAudit));
+}
+
+export function logExport(e: PbRequestEvent) {
+  const input = body(e);
+  const kind = str(input.kind) as ExportKind;
+  if (EXPORT_KINDS.indexOf(kind) < 0) fail('invalid', 'Export inconnu');
+  const { event, user } = requireEvent($app, e, e.request.pathValue('id'), 'stats.export');
+  audit($app, toEvent(event), user, 'export', Math.max(0, Math.floor(Number(input.count) || 0)), EXPORT_LABELS[kind]);
+  e.noContent(204);
+}
+
+export function exportParticipant(e: PbRequestEvent) {
+  let record: ParticipantRecord | null = null;
+  $app.runInTransaction((app) => {
+    const { participant, event, user } = requireParticipant(app, e, e.request.pathValue('id'), 'participants.manage');
+    const ev = toEvent(event);
+    const p = toParticipant(participant);
+    record = {
+      eventName: ev.name,
+      participant: p,
+      passages: findBy(app, 'passages', 'participant = {:p}', { p: p.id }, 'at').map(toPassage)
+        .map(({ direction, at, stationId, method, origin, offlineDuplicate }) => ({ direction, at, stationId, method, origin, offlineDuplicate })),
+      refusals: findBy(app, 'refusals', 'participantId = {:p}', { p: p.id }, 'at').map(toRefusal)
+        .map(({ reason, at, stationId }) => ({ reason, at, stationId })),
+      exportedAt: nowIso(),
+    };
+    audit(app, ev, user, 'participant.export', 1); // NF-34
+  });
+  e.json(200, record);
+}
+
 // ─── Public (F-30 à F-42) : sans connexion ───────────────────────────
 
 export function registrationInfo(e: PbRequestEvent) {
   const r = find($app, 'events', e.request.pathValue('id'));
   if (!r) return fail('not-found', 'Événement introuvable');
   const ev = toEvent(r);
-  const info: RegistrationInfo = { eventName: ev.name, types: ev.types, open: ev.registrationOpen };
+  const info: RegistrationInfo = { eventName: ev.name, types: ev.types, open: ev.registrationOpen && !ev.purgedAt, privacy: publicPrivacy(ev) };
   e.json(200, info);
 }
 
@@ -602,7 +793,7 @@ export function register(e: PbRequestEvent) {
   $app.runInTransaction((app) => {
     const r = find(app, 'events', eventId);
     const event = r && toEvent(r);
-    if (!event || !event.registrationOpen) fail('closed', 'Les inscriptions sont fermées');
+    if (!event || !event.registrationOpen || event.purgedAt) fail('closed', 'Les inscriptions sont fermées');
     if (!event.types.some((t) => t.id === form.typeId)) fail('invalid', 'Profil invalide');
     if (emailTaken(app, eventId, email)) fail('duplicate', 'Cette adresse email est déjà inscrite');
     token = insertParticipant(app, buildParticipant(eventId, {
@@ -625,6 +816,7 @@ export function accessPage(e: PbRequestEvent) {
     eventName: event.name, startDate: event.startDate, endDate: event.endDate, venue: event.venue,
     firstName: p.firstName, lastName: p.lastName, company: p.company,
     type: event.types.find((t) => t.id === p.typeId) ?? null, token: p.token, entryCount: p.entryCount,
+    privacy: publicPrivacy(event),
   };
   e.json(200, page);
 }
