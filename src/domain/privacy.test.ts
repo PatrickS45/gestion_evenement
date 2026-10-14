@@ -65,6 +65,12 @@ describe('bilan anonyme (F-77)', () => {
     expect(report.days[0]!.curve[0]).toEqual({ start: '2027-03-11T08:00:00.000Z', present: 2 });
   });
 
+  it('les inscriptions en attente de validation ne comptent pas (F-37)', () => {
+    const withPending = anonymousReport(event, [...participants, makeParticipant({ id: 'p', status: 'pending', typeId: 'magasin' })], passages, [], '2027-06-12T01:00:00.000Z', 'purge');
+    expect(withPending.registered).toBe(3);
+    expect(withPending.byType.find((t) => t.id === 'magasin')!.registered).toBe(2);
+  });
+
   it('ne contient aucune donnée personnelle', () => {
     const json = JSON.stringify(report);
     for (const secret of ['Léa', 'Petit', 'lea@x.fr', 'Maison', 'Stand Z', 'secret-a', 'Bruno', '"a"', '"c"']) {

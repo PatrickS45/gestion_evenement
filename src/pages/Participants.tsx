@@ -5,16 +5,19 @@ import type { EventSnapshot, NewParticipant } from '../data/store';
 import { fullName, type Participant } from '../domain/model';
 import { previewImport, type ImportPreview } from '../domain/csvImport';
 import { download, fileSlug, Modal, QrImage, TypeBadge } from '../ui/components';
+import { FieldInput, type AnswerDraft } from '../ui/fields';
+import { fieldsFor } from '../domain/fields';
 
-type StatusFilter = 'all' | 'never' | 'inside' | 'left';
+type StatusFilter = 'all' | 'pending' | 'never' | 'inside' | 'left';
 const SHOWN = 200;
 
 function statusOf(p: Participant): Exclude<StatusFilter, 'all'> {
+  if (p.status === 'pending') return 'pending';
   if (p.inside) return 'inside';
   return p.entryCount > 0 ? 'left' : 'never';
 }
 
-const STATUS_LABEL = { never: 'Jamais venu', inside: 'Dans la salle', left: 'Sorti' } as const;
+const STATUS_LABEL = { pending: 'En attente', never: 'Jamais venu', inside: 'Dans la salle', left: 'Sorti' } as const;
 
 const EMPTY_FORM = { firstName: '', lastName: '', email: '', phone: '', company: '', typeId: '' };
 
@@ -46,6 +49,13 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
     } catch (err) { notify(errorMessage(err), 'danger'); }
   };
 
+  const pending = participants.filter((p) => p.status === 'pending').length;
+
+  const accept = async (p: Participant) => {
+    try { await store.acceptParticipant(p.id); notify(`Inscription de ${fullName(p)} acceptée : son QR code est disponible sur sa page`); }
+    catch (err) { notify(errorMessage(err), 'danger'); }
+  };
+
   const remove = async (p: Participant) => {
     if (!confirm(`Supprimer ${fullName(p)} et toutes ses données, passages compris ? Cette action est tracée et définitive.`)) return;
     try { await store.deleteParticipant(p.id); notify(`${fullName(p)} supprimé(e)`); }
@@ -64,6 +74,13 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
 
       {showImport && <ImportPanel snapshot={snapshot} onDone={() => setShowImport(false)} />}
 
+      {pending > 0 && (
+        <p className="notice notice-info row-between" style={{ gap: 12 }}>
+          <span>{pending} inscription{pending > 1 ? 's' : ''} en attente de validation : le QR code n'est délivré qu'après acceptation.</span>
+          {status !== 'pending' && <button className="btn btn-secondary btn-small" onClick={() => setStatus('pending')}>Les afficher</button>}
+        </p>
+      )}
+
       <div className="card">
         <div className="form-grid" role="search">
           <div className="field">
@@ -81,6 +98,7 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
             <label htmlFor="status-filter">Statut</label>
             <select id="status-filter" className="input" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
               <option value="all">Tous</option>
+              {(pending > 0 || event.requireApproval) && <option value="pending">En attente de validation ({pending})</option>}
               <option value="never">Jamais venus</option>
               <option value="inside">Dans la salle</option>
               <option value="left">Sortis</option>
@@ -114,7 +132,9 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
                     </td>
                     <td>
                       <div className="row" style={{ flexWrap: 'nowrap' }}>
-                        <button className="btn btn-secondary btn-small" onClick={() => setQrFor(p)} aria-label={`QR code de ${fullName(p)}`}>QR</button>
+                        {p.status === 'pending'
+                          ? <button className="btn btn-small" onClick={() => void accept(p)} aria-label={`Accepter l'inscription de ${fullName(p)}`}>Accepter</button>
+                          : <button className="btn btn-secondary btn-small" onClick={() => setQrFor(p)} aria-label={`QR code de ${fullName(p)}`}>QR</button>}
                         <button className="btn btn-secondary btn-small" onClick={() => setEditing(p)} aria-label={`Modifier ${fullName(p)}`}>Modifier</button>
                         <button className="btn btn-secondary btn-small" onClick={() => void exportOne(p)} aria-label={`Exporter les données de ${fullName(p)}`}
                           title="Export des données de la personne, à sa demande">Ses données</button>
@@ -167,10 +187,12 @@ function ParticipantForm({ snapshot, participant, onClose }: { snapshot: EventSn
   const initial = participant && participant !== 'new'
     ? { firstName: participant.firstName, lastName: participant.lastName, email: participant.email, phone: participant.phone, company: participant.company, typeId: participant.typeId }
     : { ...EMPTY_FORM, typeId: snapshot.event.types[0]?.id ?? '' };
+  const initialAnswers: AnswerDraft = participant && participant !== 'new' ? { ...participant.answers } : {};
   const [form, setForm] = useState(initial);
+  const [answers, setAnswers] = useState<AnswerDraft>(initialAnswers);
   const [error, setError] = useState('');
   const [lastKey, setLastKey] = useState<unknown>(participant);
-  if (lastKey !== participant) { setLastKey(participant); setForm(initial); setError(''); }
+  if (lastKey !== participant) { setLastKey(participant); setForm(initial); setAnswers(initialAnswers); setError(''); }
 
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
 
@@ -178,11 +200,11 @@ function ParticipantForm({ snapshot, participant, onClose }: { snapshot: EventSn
     e.preventDefault();
     try {
       if (isNew) {
-        const input: NewParticipant = { ...form, source: 'manual' };
+        const input: NewParticipant = { ...form, source: 'manual', answers };
         await store.addParticipants(snapshot.event.id, [input]);
         notify(`${form.firstName} ${form.lastName} ajouté(e)`);
       } else if (participant) {
-        await store.updateParticipant(participant.id, form);
+        await store.updateParticipant(participant.id, { ...form, answers });
         notify('Modifications enregistrées');
       }
       onClose();
@@ -205,6 +227,9 @@ function ParticipantForm({ snapshot, participant, onClose }: { snapshot: EventSn
           <div className="field"><label htmlFor="pf-company">Société / enseigne</label><input id="pf-company" className="input" autoComplete="off" value={form.company} onChange={set('company')} /></div>
           <div className="field"><label htmlFor="pf-phone">Téléphone</label><input id="pf-phone" type="tel" className="input" autoComplete="off" value={form.phone} onChange={set('phone')} /></div>
         </div>
+        {fieldsFor(snapshot.event.fields, form.typeId).map((f) => (
+          <FieldInput key={f.id} field={f} idPrefix="pf-field" value={answers[f.id]} onChange={(v) => setAnswers({ ...answers, [f.id]: v })} />
+        ))}
         {error && <p role="alert" className="error">{error}</p>}
         <div className="row"><button className="btn" type="submit">{isNew ? 'Ajouter' : 'Enregistrer'}</button></div>
       </form>

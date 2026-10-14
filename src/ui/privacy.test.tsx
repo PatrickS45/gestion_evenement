@@ -37,5 +37,7 @@ describe('affichage de la protection des données', () => {
     expect(html).toContain('Inscrits 2');
     expect(html).toContain('Jour 1');
     expect(html).toContain('sans donnée personnelle');
+    expect(html).toContain('Première arrivée');
+    expect(html).toContain('50 % des visiteurs arrivés à');
   });
 });

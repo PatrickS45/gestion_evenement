@@ -410,6 +410,7 @@ export class StationStore implements EventStore {
   async signUp(input: SignUpInput) { const s = await this.inner.signUp(input); await this.remember(s); return s; }
   async signIn(email: string, password: string) { const s = await this.inner.signIn(email, password); await this.remember(s); return s; }
   async createOrganization(name: string) { const s = await this.inner.createOrganization(name); await this.remember(s); return s; }
+  async joinEvent(code: string) { const s = await this.inner.joinEvent(code); await this.remember(s); return s; }
 
   /** Refusée tant que des passages hors ligne n'ont pas pu être envoyés : ils seraient perdus. */
   async signOut() {
@@ -443,11 +444,14 @@ export class StationStore implements EventStore {
   updateParticipant(id: string, patch: ParticipantPatch) { return this.inner.updateParticipant(id, patch); }
   deleteParticipant(id: string) { return this.inner.deleteParticipant(id); }
   revokeToken(id: string) { return this.inner.revokeToken(id); }
+  acceptParticipant(id: string) { return this.inner.acceptParticipant(id); }
   closeDay(eventId: string, stationId: string) { return this.inner.closeDay(eventId, stationId); }
   syncOffline(eventId: string, batch: SyncBatch) { return this.inner.syncOffline(eventId, batch); }
   getRegistrationInfo(eventId: string) { return this.inner.getRegistrationInfo(eventId); }
   register(eventId: string, form: RegistrationForm) { return this.inner.register(eventId, form); }
   getAccessPage(token: string) { return this.inner.getAccessPage(token); }
+  async setAccessCode(eventId: string, enabled: boolean) { return this.inner.setAccessCode(eventId, enabled); }
+  listEventAgents(eventId: string) { return this.inner.listEventAgents(eventId); }
   getOrgPrivacy(orgId: string) { return this.inner.getOrgPrivacy(orgId); }
   setOrgPrivacy(orgId: string, privacy: Partial<PrivacyPolicy>) { return this.inner.setOrgPrivacy(orgId, privacy); }
   async purgeEvent(eventId: string) { const r = await this.inner.purgeEvent(eventId); await this.forgetCopy(eventId); return r; }

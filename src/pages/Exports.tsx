@@ -3,6 +3,7 @@ import { errorMessage, useNotify, useStore } from '../app/context';
 import type { EventSnapshot } from '../data/store';
 import type { ExportKind } from '../domain/privacy';
 import { anonymousReport, type EventReport } from '../domain/report';
+import { controlStats, type ControlStats } from '../domain/stats';
 import { fullWorkbook, participantList } from '../export/reports';
 import { toCsv, toXlsx } from '../export/spreadsheet';
 import { download, fileSlug } from '../ui/components';
@@ -72,6 +73,58 @@ export function Exports({ snapshot }: { snapshot: EventSnapshot }) {
       {report === undefined ? <p role="status">Chargement du bilan…</p>
         : report === null ? <p className="notice notice-warn">Aucun bilan enregistré pour cet événement.</p>
           : <ReportView report={report} />}
+
+      {!event.purgedAt && <Control stats={controlStats(snapshot.passages, snapshot.refusals)} />}
     </div>
+  );
+}
+
+const METHOD_LABELS: Record<keyof ControlStats['byMethod'], string> = {
+  camera: 'Caméra', scanner: 'Douchette', search: 'Recherche par nom', manual: 'Saisie manuelle',
+};
+
+/** Contrôle (F-74) : nomme les agents, n'est donc ni imprimé avec le bilan ni conservé après la purge. */
+function Control({ stats }: { stats: ControlStats }) {
+  const scans = Object.values(stats.byMethod).reduce((a, b) => a + b, 0);
+  return (
+    <section className="card stack no-print" aria-labelledby="control-title">
+      <h2 id="control-title" style={{ marginBottom: 0 }}>Contrôle</h2>
+      <p className="muted">Scans par agent et par poste, hors clôture de journée. Ces chiffres nomment les agents : ils ne figurent pas dans le bilan.</p>
+      <div className="grid">
+        <div className="card"><p className="muted">QR codes inconnus</p><p className="big-number">{stats.refusals.unknown}</p></div>
+        <div className="card"><p className="muted">Refus « déjà dans la salle »</p><p className="big-number">{stats.refusals.alreadyInside}</p></div>
+        <div className="card"><p className="muted">Passages enregistrés hors ligne</p><p className="big-number">{stats.offline}</p></div>
+        <div className="card"><p className="muted">Doublons hors ligne écartés</p><p className="big-number">{stats.offlineDuplicates}</p></div>
+      </div>
+      {scans === 0 ? <p className="muted">Aucun scan pour le moment.</p> : <>
+        <div className="table-wrap">
+          <table>
+            <caption className="sr-only">Scans par agent</caption>
+            <thead><tr><th scope="col">Agent</th><th scope="col" className="num">Entrées</th><th scope="col" className="num">Sorties</th><th scope="col" className="num">Refus</th></tr></thead>
+            <tbody>{stats.byAgent.map((a) => (
+              <tr key={a.agentId}><td>{a.agentName || '(sans nom)'}</td><td className="num">{a.entries}</td><td className="num">{a.exits}</td><td className="num">{a.refusals}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <caption className="sr-only">Scans par poste</caption>
+            <thead><tr><th scope="col">Poste</th><th scope="col" className="num">Entrées</th><th scope="col" className="num">Sorties</th><th scope="col" className="num">Refus</th></tr></thead>
+            <tbody>{stats.byStation.map((s) => (
+              <tr key={s.stationId}><td>{s.stationId || '(sans nom)'}</td><td className="num">{s.entries}</td><td className="num">{s.exits}</td><td className="num">{s.refusals}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <caption className="sr-only">Moyens d'identification utilisés</caption>
+            <thead><tr><th scope="col">Moyen d'identification</th><th scope="col" className="num">Scans</th><th scope="col" className="num">Part</th></tr></thead>
+            <tbody>{(Object.keys(METHOD_LABELS) as (keyof ControlStats['byMethod'])[]).map((m) => (
+              <tr key={m}><td>{METHOD_LABELS[m]}</td><td className="num">{stats.byMethod[m]}</td><td className="num">{Math.round((stats.byMethod[m] / scans) * 100)} %</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </>}
+    </section>
   );
 }

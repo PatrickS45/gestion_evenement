@@ -3,8 +3,9 @@
 // (PocketBase, lot 2) sont interchangeables.
 import type { Role } from '../domain/access';
 import type {
-  Direction, EventInfo, Participant, ParticipantSource, ParticipantType, Passage, Refusal, ScanMethod, User,
+  Direction, EventInfo, Participant, ParticipantStatus, ParticipantSource, ParticipantType, Passage, Refusal, ScanMethod, User,
 } from '../domain/model';
+import type { CustomField } from '../domain/fields';
 import type { SyncBatch, SyncResult } from '../domain/offline';
 import type { AuditEntry, ExportKind, PrivacyPolicy } from '../domain/privacy';
 import type { EventReport } from '../domain/report';
@@ -19,9 +20,18 @@ export interface Membership {
   role: Role;
 }
 
+/** Événement rejoint avec son code d'accès (F-04), hors de toute organisation : rôle d'agent d'accueil. */
+export interface EventAccess {
+  eventId: string;
+  eventName: string;
+  startDate: string;
+  endDate: string;
+}
+
 export interface Session {
   user: User;
   memberships: Membership[];
+  eventAccess: EventAccess[];
 }
 
 /** Membre d'une organisation, vu par son propriétaire. */
@@ -36,7 +46,7 @@ export interface SignUpInput {
   name: string;
   email: string;
   password: string;
-  /** Nom de la première organisation, dont le nouvel utilisateur devient propriétaire. */
+  /** Nom de la première organisation, dont le nouvel utilisateur devient propriétaire ; vide pour un agent qui rejoindra un événement avec son code. */
   organization: string;
 }
 
@@ -48,7 +58,7 @@ export interface NewEvent {
   capacity?: number;
 }
 
-export type EventPatch = Partial<Omit<EventInfo, 'id' | 'orgId' | 'createdAt' | 'privacy' | 'purgedAt'>> & {
+export type EventPatch = Partial<Omit<EventInfo, 'id' | 'orgId' | 'createdAt' | 'privacy' | 'purgedAt' | 'accessCode'>> & {
   privacy?: Partial<PrivacyPolicy>;
 };
 
@@ -75,9 +85,14 @@ export interface NewParticipant {
   typeId: string;
   source: ParticipantSource;
   consentAt?: string | null;
+  /** Réponses aux champs personnalisés (F-33) ; vérifiées, sans exiger les champs obligatoires. */
+  answers?: Record<string, unknown>;
 }
 
-export type ParticipantPatch = Partial<Pick<Participant, 'firstName' | 'lastName' | 'email' | 'phone' | 'company' | 'typeId'>>;
+export type ParticipantPatch = Partial<Pick<Participant, 'firstName' | 'lastName' | 'email' | 'phone' | 'company' | 'typeId'>> & {
+  /** Réponses aux champs personnalisés, vérifiées par le stockage (F-33). */
+  answers?: Record<string, unknown>;
+};
 
 export interface EventSnapshot {
   event: EventInfo;
@@ -100,6 +115,8 @@ export interface RegistrationInfo {
   types: ParticipantType[];
   open: boolean;
   privacy: PublicPrivacy;
+  /** Champs personnalisés, à filtrer selon le type choisi (F-33). */
+  fields: CustomField[];
 }
 
 /** Ce que voit un participant sur sa page d'accès (F-40) : ses seules données. */
@@ -112,8 +129,10 @@ export interface AccessPage {
   lastName: string;
   company: string;
   type: ParticipantType | null;
+  /** Vide tant que l'inscription attend sa validation : le QR code n'est délivré qu'après (F-37). */
   token: string;
   entryCount: number;
+  status: ParticipantStatus;
   privacy: PublicPrivacy;
 }
 
@@ -125,6 +144,10 @@ export interface RegistrationForm {
   company: string;
   typeId: string;
   consent: boolean;
+  /** Champ piège, invisible : seul un robot le remplit (F-36). */
+  website?: string;
+  /** Réponses aux champs personnalisés ; les champs obligatoires du type choisi sont exigés (F-33). */
+  answers?: Record<string, unknown>;
 }
 
 export class StoreError extends Error {
@@ -166,6 +189,8 @@ export interface EventStore {
   updateParticipant(id: string, patch: ParticipantPatch): Promise<Participant>;
   deleteParticipant(id: string): Promise<void>;
   revokeToken(id: string): Promise<Participant>;
+  /** Accepte une inscription en attente (F-37) ; la refuser, c'est la supprimer. */
+  acceptParticipant(id: string): Promise<Participant>;
 
   // Scan (F-50 à F-59) — opérations atomiques ; l'agent est l'utilisateur connecté, `stationId` son poste
   scan(eventId: string, token: string, direction: Direction, method: ScanMethod, stationId: string): Promise<ScanResult>;
@@ -182,6 +207,14 @@ export interface EventStore {
   getRegistrationInfo(eventId: string): Promise<RegistrationInfo | null>;
   register(eventId: string, form: RegistrationForm): Promise<{ token: string }>;
   getAccessPage(token: string): Promise<AccessPage | null>;
+
+  // Agents rejoignant un événement par code (F-04)
+  /** L'utilisateur connecté rejoint l'événement du code comme agent d'accueil. */
+  joinEvent(code: string): Promise<Session>;
+  /** Active (nouveau code) ou désactive le code ; le désactiver retire l'accès de ceux qui l'ont utilisé. */
+  setAccessCode(eventId: string, enabled: boolean): Promise<EventInfo>;
+  /** Agents ayant rejoint l'événement avec son code. */
+  listEventAgents(eventId: string): Promise<Member[]>;
 
   // Protection des données (NF-32 à NF-34, F-77, RG-09)
   /** Politique appliquée aux nouveaux événements de l'organisation. */

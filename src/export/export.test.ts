@@ -43,19 +43,19 @@ describe('CSV', () => {
 });
 
 describe('classeur Excel', () => {
-  it('produit une archive valide avec les six onglets', async () => {
+  it('produit une archive valide avec les huit onglets', async () => {
     const blob = toXlsx(fullWorkbook(snapshot, new Date('2027-03-11T12:00:00Z')));
     const files = unzipSync(new Uint8Array(await blob.arrayBuffer()));
     const workbook = strFromU8(files['xl/workbook.xml']!);
-    for (const name of ['Synthèse', 'Par type', 'Affluence', 'Participants', 'Passages', 'Refus']) {
+    for (const name of ['Synthèse', 'Par type', 'Affluence', 'Comportement', 'Contrôle', 'Participants', 'Passages', 'Refus']) {
       expect(workbook).toContain(`name="${name}"`);
     }
-    expect(Object.keys(files).filter((f) => f.startsWith('xl/worksheets/'))).toHaveLength(6);
+    expect(Object.keys(files).filter((f) => f.startsWith('xl/worksheets/'))).toHaveLength(8);
   });
 
   it('écrit le texte en ligne et échappé : aucune formule possible', async () => {
     const files = unzipSync(new Uint8Array(await toXlsx(fullWorkbook(snapshot)).arrayBuffer()));
-    const participants = strFromU8(files['xl/worksheets/sheet4.xml']!);
+    const participants = strFromU8(files['xl/worksheets/sheet6.xml']!);
     expect(participants).toContain('t="inlineStr"><is><t xml:space="preserve">=HYPERLINK(&quot;x&quot;)</t>');
     expect(participants).not.toContain('<f>');
     expect(participants).toContain('Roy &amp; Fils');
@@ -66,5 +66,16 @@ describe('classeur Excel', () => {
     expect(summary!.rows).toContainEqual(['Inscrits', 2]);
     expect(summary!.rows).toContainEqual(['Venus au moins une fois', 1]);
     expect(byType!.rows.find((r) => r[0] === 'Exposant')).toEqual(['Exposant', 1, 1, { percent: 1 }, 1, 1]);
+  });
+
+  it('affluence, comportement et contrôle (F-71, F-72, F-74)', () => {
+    const sheets = fullWorkbook(snapshot);
+    const sheet = (name: string) => sheets.find((x) => x.name === name)!;
+    expect(sheet('Affluence').rows[0]).toEqual([{ header: 'Journée' }, { header: 'Tranche' }, { header: 'Arrivées' }, { header: 'Entrées' }, { header: 'Sorties' }, { header: 'Présence maximale' }]);
+    const days = sheet('Comportement').rows.slice(1).filter((r) => typeof r[1] === 'number');
+    expect(days.length).toBeGreaterThan(0);
+    const control = sheet('Contrôle').rows;
+    expect(control).toContainEqual(['QR codes inconnus', snapshot.refusals.filter((r) => r.reason === 'unknown').length]);
+    expect(control.some((r) => r[0] === 'Caméra')).toBe(true);
   });
 });

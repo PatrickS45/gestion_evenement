@@ -1,7 +1,9 @@
 // Contenu des exports (F-75) : classeur complet et listes CSV.
 import type { EventSnapshot } from '../data/store';
 import { replayPassages } from '../domain/attendance';
-import { fullName, type Participant, type ScanMethod } from '../domain/model';
+import { accepted, fullName, type Participant, type ScanMethod } from '../domain/model';
+import { controlStats, dailyFlows } from '../domain/stats';
+import { answerText } from '../domain/fields';
 import { floorQuarter, parisDay, parisTime, QUARTER_MS, toMs } from '../domain/time';
 import type { Cell, Sheet } from './spreadsheet';
 
@@ -19,12 +21,14 @@ function typeLabel(s: EventSnapshot, typeId: string) {
 }
 
 function status(p: Participant) {
+  if (p.status === 'pending') return 'En attente de validation';
   if (p.inside) return 'Dans la salle';
   return p.entryCount > 0 ? 'Sorti' : 'Jamais venu';
 }
 
 export function summarySheet(s: EventSnapshot, exportedAt: Date): Sheet {
-  const { event, participants, passages } = s;
+  const { event, passages } = s;
+  const participants = accepted(s.participants);
   const replay = replayPassages(passages);
   const came = participants.filter((p) => p.entryCount > 0).length;
   return {
@@ -58,7 +62,7 @@ export function byTypeSheet(s: EventSnapshot): Sheet {
     rows: [
       [H('Type'), H('Inscrits'), H('Venus'), H('Taux de venue'), H('Dans la salle'), H('Sociétés différentes')],
       ...s.event.types.map((t) => {
-        const ofType = s.participants.filter((p) => p.typeId === t.id);
+        const ofType = accepted(s.participants).filter((p) => p.typeId === t.id);
         const came = ofType.filter((p) => p.entryCount > 0).length;
         const companies = new Set(ofType.map((p) => p.company.trim().toLowerCase()).filter(Boolean)).size;
         return [t.label, ofType.length, came, pct(came, ofType.length), ofType.filter((p) => p.inside).length, companies];
@@ -70,8 +74,9 @@ export function byTypeSheet(s: EventSnapshot): Sheet {
 /** Entrées, sorties et présence maximale par quart d'heure, pour chaque journée. */
 export function attendanceSheet(s: EventSnapshot): Sheet {
   const replay = replayPassages(s.passages);
-  const rows: Cell[][] = [[H('Journée'), H('Tranche'), H('Entrées'), H('Sorties'), H('Présence maximale')]];
+  const rows: Cell[][] = [[H('Journée'), H('Tranche'), H('Arrivées'), H('Entrées'), H('Sorties'), H('Présence maximale')]];
   const counted = s.passages.filter((p) => !p.offlineDuplicate);
+  const flows = new Map(dailyFlows(s.passages).map((f) => [f.day, f]));
   for (const day of replay.days) {
     const points = replay.timeline.filter((p) => parisDay(p.at) === day.day);
     if (points.length === 0) continue;
@@ -84,23 +89,72 @@ export function attendanceSheet(s: EventSnapshot): Sheet {
       const inSlot = counted.filter((p) => { const t = toMs(p.at); return t >= start && t < start + QUARTER_MS; });
       rows.push([
         dayLabel(day.day), `${parisTime(start)} – ${parisTime(start + QUARTER_MS)}`,
+        flows.get(day.day)?.arrivalsByQuarter.find((q) => q.start === start)?.count ?? 0,
         inSlot.filter((p) => p.direction === 'in').length, inSlot.filter((p) => p.direction === 'out').length, max,
       ]);
     }
   }
-  return { name: 'Affluence', widths: [12, 16, 10, 10, 18], rows };
+  return { name: 'Affluence', widths: [12, 16, 10, 10, 10, 18], rows };
+}
+
+const clock = (t: number | null) => (t === null ? '' : parisTime(t));
+const minutes = (ms: number | null) => (ms === null ? '' : Math.round(ms / 60_000));
+
+/** Affluence et comportement par journée (F-71, F-72). */
+export function behaviourSheet(s: EventSnapshot): Sheet {
+  const flows = dailyFlows(s.passages);
+  const rows: Cell[][] = [
+    [H('Journée'), H('Arrivées'), H('Première arrivée'), H('Dernière arrivée'), H('50 % arrivés à'), H('90 % arrivés à'), H('Présence moyenne (min)'), H('Entrées par visiteur')],
+    ...flows.map((f) => [
+      dayLabel(f.day), f.arrivals, clock(f.firstArrival), clock(f.lastArrival), clock(f.half), clock(f.ninety),
+      minutes(f.averageStayMs), f.averageEntries === null ? '' : Math.round(f.averageEntries * 100) / 100,
+    ]),
+    [],
+    [H('Sorties par heure (hors clôture)'), ...flows.map((f) => H(dayLabel(f.day)))],
+    ...Array.from({ length: 24 }, (_, h) => h)
+      .filter((h) => flows.some((f) => f.exitsByHour[h]! > 0))
+      .map((h) => [`${h} h – ${h + 1} h`, ...flows.map((f) => f.exitsByHour[h]!)]),
+  ];
+  return { name: 'Comportement', widths: [30, 12, 16, 16, 14, 14, 20, 18], rows };
+}
+
+/** Contrôle (F-74) : scans par agent et par poste, moyens d'identification, refus et doublons. */
+export function controlSheet(s: EventSnapshot): Sheet {
+  const c = controlStats(s.passages, s.refusals);
+  return {
+    name: 'Contrôle',
+    widths: [26, 12, 12, 12],
+    rows: [
+      [H('Agent'), H('Entrées'), H('Sorties'), H('Refus')],
+      ...c.byAgent.map((a) => [a.agentName, a.entries, a.exits, a.refusals]),
+      [],
+      [H('Poste'), H('Entrées'), H('Sorties'), H('Refus')],
+      ...c.byStation.map((x) => [x.stationId, x.entries, x.exits, x.refusals]),
+      [],
+      [H("Moyen d'identification"), H('Scans')],
+      ...(Object.keys(METHODS) as ScanMethod[]).map((m) => [METHODS[m], c.byMethod[m]]),
+      [],
+      [H('Contrôle'), H('Nombre')],
+      ['QR codes inconnus', c.refusals.unknown],
+      ['Refus « déjà dans la salle »', c.refusals.alreadyInside],
+      ['Passages enregistrés hors ligne', c.offline],
+      ['Doublons hors ligne écartés', c.offlineDuplicates],
+    ],
+  };
 }
 
 export function participantsSheet(s: EventSnapshot): Sheet {
+  const fields = s.event.fields;
   return {
     name: 'Participants',
-    widths: [20, 18, 14, 26, 30, 16, 14, 18, 10, 18],
+    widths: [20, 18, 14, 26, 30, 16, 14, 18, 10, 18, ...fields.map(() => 22)],
     rows: [
-      [H('Nom'), H('Prénom'), H('Type'), H('Société'), H('Email'), H('Téléphone'), H('Statut'), H('Première entrée'), H('Entrées'), H('Origine')],
+      [H('Nom'), H('Prénom'), H('Type'), H('Société'), H('Email'), H('Téléphone'), H('Statut'), H('Première entrée'), H('Entrées'), H('Origine'), ...fields.map((f) => H(f.label))],
       ...s.participants.map((p) => [
         p.lastName, p.firstName, typeLabel(s, p.typeId), p.company, p.email, p.phone, status(p),
         dateTime(p.firstEntryAt), p.entryCount,
         p.source === 'form' ? 'Formulaire' : p.source === 'import' ? 'Import' : 'Saisie',
+        ...fields.map((f) => { const v = p.answers[f.id]; return typeof v === 'number' ? v : answerText(f, v); }),
       ]),
     ],
   };
@@ -140,12 +194,15 @@ export function refusalsSheet(s: EventSnapshot): Sheet {
 }
 
 export function fullWorkbook(s: EventSnapshot, exportedAt = new Date()): Sheet[] {
-  return [summarySheet(s, exportedAt), byTypeSheet(s), attendanceSheet(s), participantsSheet(s), passagesSheet(s), refusalsSheet(s)];
+  return [
+    summarySheet(s, exportedAt), byTypeSheet(s), attendanceSheet(s), behaviourSheet(s), controlSheet(s),
+    participantsSheet(s), passagesSheet(s), refusalsSheet(s),
+  ];
 }
 
 /** Listes CSV : présents en ce moment, jamais venus. */
 export function participantList(s: EventSnapshot, filter: 'inside' | 'never'): Cell[][] {
-  const list = s.participants.filter((p) => (filter === 'inside' ? p.inside : p.entryCount === 0));
+  const list = accepted(s.participants).filter((p) => (filter === 'inside' ? p.inside : p.entryCount === 0));
   return [
     ['Nom', 'Prénom', 'Type', 'Société', 'Email', 'Téléphone'],
     ...list.map((p) => [p.lastName, p.firstName, typeLabel(s, p.typeId), p.company, p.email, p.phone]),

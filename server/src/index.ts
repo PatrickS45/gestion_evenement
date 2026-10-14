@@ -9,6 +9,7 @@ import {
   defaultPrivacy, EXPORT_KINDS, EXPORT_LABELS, normalizePrivacy, privacyComplete, purgeDay, retentionState,
   type AuditAction, type AuditEntry, type ExportKind, type PrivacyPolicy,
 } from '../../src/domain/privacy';
+import { checkAnswers, normalizeFields } from '../../src/domain/fields';
 import { anonymousReport, type EventReport, type ReportReason } from '../../src/domain/report';
 import { parisDay } from '../../src/domain/time';
 import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncResult, type SyncStatus } from '../../src/domain/offline';
@@ -44,6 +45,9 @@ const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String
 const clip = (v: unknown, max: number) => str(v).trim().slice(0, max);
 /** Jeton de QR code : 160 bits tirés d'un générateur cryptographique (F-25). */
 const newToken = () => $security.randomStringWithAlphabet(40, '0123456789abcdef');
+/** Code d'accès des agents (F-04) : 8 caractères faciles à dicter, sans 0/O ni 1/I/L. */
+const newAccessCode = () => $security.randomStringWithAlphabet(8, 'ABCDEFGHJKMNPQRSTUVWXYZ23456789');
+const normCode = (v: unknown) => str(v).trim().toUpperCase().replace(/[\s-]/g, '');
 
 function ids(r: PbRecord, field: string): string[] {
   const list = r.getStringSlice(field);
@@ -80,6 +84,9 @@ function toEvent(r: PbRecord): EventInfo {
     registrationOpen: r.getBool('registrationOpen'), createdAt: r.getString('createdAt'),
     privacy: normalizePrivacy(parseJson(r, 'privacy', {}), defaultPrivacy()),
     purgedAt: r.getString('purgedAt') || null,
+    accessCode: r.getString('accessCode') || null,
+    requireApproval: r.getBool('requireApproval'),
+    fields: normalizeFields(parseJson(r, 'fields', [])),
   };
 }
 
@@ -98,6 +105,8 @@ function toParticipant(r: PbRecord): Participant {
     phone: r.getString('phone'), company: r.getString('company'), typeId: r.getString('typeId'),
     token: r.getString('token'), tokenRevoked: r.getBool('tokenRevoked'),
     source: r.getString('source') as Participant['source'],
+    status: r.getString('status') === 'pending' ? 'pending' : 'accepted',
+    answers: parseJson(r, 'answers', {}),
     consentAt: r.getString('consentAt') || null, createdAt: r.getString('createdAt'),
     inside: r.getBool('inside'), entryCount: r.getInt('entryCount'),
     firstEntryAt: r.getString('firstEntryAt') || null, lastMoveAt: r.getString('lastMoveAt') || null,
@@ -109,6 +118,8 @@ function writeParticipant(r: PbRecord, p: Participant) {
   r.set('event', p.eventId);
   for (const k of ['firstName', 'lastName', 'email', 'phone', 'company', 'typeId', 'token', 'source', 'createdAt'] as const) r.set(k, p[k]);
   r.set('tokenRevoked', p.tokenRevoked);
+  r.set('status', p.status);
+  r.set('answers', p.answers);
   r.set('consentAt', p.consentAt ?? '');
   r.set('inside', p.inside);
   r.set('entryCount', p.entryCount);
@@ -161,12 +172,19 @@ function requireOrg(app: PbApp, e: PbRequestEvent, orgId: string, action: Action
 }
 
 /** Pour qui n'est pas membre de son organisation, un événement n'existe pas (NF-24). */
+/** Rôle dans l'organisation de l'événement, ou agent s'il l'a rejoint avec son code (F-04). */
+function eventRole(org: PbRecord, event: PbRecord, userId: string): Role | null {
+  return roleIn(org, userId) ?? (ids(event, 'agents').indexOf(userId) >= 0 ? 'agent' : null);
+}
+
 function requireEvent(app: PbApp, e: PbRequestEvent, eventId: string, action: Action) {
   const user = requireUser(e);
   const event = find(app, 'events', eventId);
   const org = event && find(app, 'organizations', event.getString('org'));
-  if (!event || !org || !roleIn(org, user.id)) return fail('not-found', 'Événement introuvable');
-  return { event, ...requireOrg(app, e, org.id, action) };
+  const role = event && org ? eventRole(org, event, user.id) : null;
+  if (!event || !org || !role) return fail('not-found', 'Événement introuvable');
+  if (!can(role, action)) fail('forbidden', 'Votre rôle ne permet pas cette action');
+  return { event, org, user, role };
 }
 
 function requireParticipant(app: PbApp, e: PbRequestEvent, id: string, action: Action) {
@@ -193,6 +211,9 @@ function sessionOf(app: PbApp, user: PbRecord): Session {
     memberships: orgs
       .map((o) => ({ orgId: o.id, orgName: o.getString('name'), role: roleIn(o, user.id)! }))
       .sort((a, b) => a.orgName.localeCompare(b.orgName, 'fr')),
+    eventAccess: findBy(app, 'events', 'agents.id ?= {:u}', { u: user.id }, '-startDate')
+      .filter((ev) => orgs.every((o) => o.id !== ev.getString('org')))
+      .map((ev) => ({ eventId: ev.id, eventName: ev.getString('name'), startDate: ev.getString('startDate'), endDate: ev.getString('endDate') })),
   };
 }
 
@@ -250,7 +271,8 @@ export function signUp(e: PbRequestEvent) {
     user.set('name', name);
     user.setPassword(str(input.password));
     app.save(user);
-    createOrg(app, input.organization, user.id);
+    // Sans nom d'organisation : agent qui rejoindra un événement avec son code (F-04)
+    if (clip(input.organization, 200)) createOrg(app, input.organization, user.id);
   });
   e.json(201, { ok: true });
 }
@@ -336,6 +358,8 @@ function saveEvent(app: PbApp, r: PbRecord, ev: EventInfo) {
   r.set('registrationOpen', ev.registrationOpen);
   r.set('createdAt', ev.createdAt);
   r.set('privacy', ev.privacy);
+  r.set('requireApproval', ev.requireApproval);
+  r.set('fields', ev.fields);
   r.set('purgedAt', ev.purgedAt ?? '');
   app.save(r);
   return toEvent(r);
@@ -347,7 +371,7 @@ function newEvent(app: PbApp, orgId: string, input: NewEvent): EventInfo {
     id: '', orgId, name: str(input.name), startDate: str(input.startDate), endDate: str(input.endDate),
     venue: str(input.venue), capacity: input.capacity ?? 1000, thresholds: DEFAULT_THRESHOLDS,
     types: DEFAULT_TYPES, registrationOpen: false, createdAt: nowIso(),
-    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null,
+    privacy: orgPrivacy(app.findRecordById('organizations', orgId)), purgedAt: null, accessCode: null, requireApproval: false, fields: [],
   });
 }
 
@@ -381,6 +405,8 @@ export function updateEvent(e: PbRequestEvent) {
   if (patch.types !== undefined) next.types = (patch.types ?? []).map((t) => ({ id: clip(t.id, 60), label: clip(t.label, 60), color: clip(t.color, 7) }));
   if (patch.registrationOpen !== undefined) next.registrationOpen = !!patch.registrationOpen;
   if (patch.privacy !== undefined) next.privacy = normalizePrivacy(patch.privacy, current.privacy);
+  if (patch.requireApproval !== undefined) next.requireApproval = !!patch.requireApproval;
+  if (patch.fields !== undefined) next.fields = normalizeFields(patch.fields);
   if (next.registrationOpen && current.purgedAt) fail('closed', 'Les données de cet événement ont été purgées');
   if (!next.types.length) fail('invalid', 'Il faut au moins un type de participant');
   e.json(200, saveEvent($app, event, next));
@@ -394,7 +420,7 @@ export function duplicateEvent(e: PbRequestEvent) {
     const created = newEvent(app, source.orgId, {
       name: str(body(e).name), startDate: source.startDate, endDate: source.endDate, venue: source.venue, capacity: source.capacity,
     });
-    copy = saveEvent(app, app.findRecordById('events', created.id), { ...created, types: source.types, thresholds: source.thresholds, privacy: source.privacy });
+    copy = saveEvent(app, app.findRecordById('events', created.id), { ...created, types: source.types, thresholds: source.thresholds, privacy: source.privacy, fields: source.fields });
   });
   e.json(201, copy);
 }
@@ -413,14 +439,14 @@ export function deleteEvent(e: PbRequestEvent) {
 
 // ─── Participants (F-20 à F-26) ──────────────────────────────────────
 
-function buildParticipant(eventId: string, input: NewParticipant): Participant {
+function buildParticipant(eventId: string, input: NewParticipant, status: Participant['status'] = 'accepted', answers: Participant['answers'] = {}): Participant {
   return {
     id: '', eventId,
     firstName: clip(input.firstName, 100), lastName: clip(input.lastName, 100),
     email: normEmail(input.email).slice(0, 320), phone: clip(input.phone, 40),
     company: str(input.company).replace(/\s+/g, ' ').trim().slice(0, 120),
     typeId: str(input.typeId), token: newToken(), tokenRevoked: false,
-    source: input.source, consentAt: input.consentAt ?? null, createdAt: nowIso(),
+    source: input.source, status, answers, consentAt: input.consentAt ?? null, createdAt: nowIso(),
     inside: false, entryCount: 0, firstEntryAt: null, lastMoveAt: null,
   };
 }
@@ -439,7 +465,7 @@ export function addParticipants(e: PbRequestEvent) {
   $app.runInTransaction((app) => {
     const { event, user } = requireEvent(app, e, eventId, 'participants.manage');
     requireNotPurged(event);
-    const types = toEvent(event).types;
+    const { types, fields } = toEvent(event);
     for (const input of list) {
       if (!str(input.firstName).trim() && !str(input.lastName).trim()) fail('invalid', 'Nom manquant');
       const email = normEmail(input.email);
@@ -447,7 +473,8 @@ export function addParticipants(e: PbRequestEvent) {
       if (emailTaken(app, eventId, email)) fail('duplicate', `${str(input.email)} est déjà inscrit`);
       const typeId = types.some((t) => t.id === input.typeId) ? input.typeId : types[0]!.id;
       const source = (['manual', 'import', 'form'] as const).indexOf(input.source) >= 0 ? input.source : 'manual';
-      added.push(insertParticipant(app, buildParticipant(eventId, { ...input, typeId, source })));
+      const { answers } = checkAnswers(fields, typeId, input.answers, { required: false });
+      added.push(insertParticipant(app, buildParticipant(eventId, { ...input, typeId, source }, 'accepted', answers)));
     }
     const imported = added.filter((p) => p.source === 'import').length;
     if (imported) audit(app, toEvent(event), user, 'import', imported); // RG-09
@@ -464,6 +491,12 @@ export function updateParticipant(e: PbRequestEvent) {
     for (const k of ['firstName', 'lastName', 'phone', 'company', 'typeId'] as const) {
       if (patch[k] !== undefined) next[k] = clip(patch[k], k === 'company' ? 120 : 100);
     }
+    if (patch.answers !== undefined || patch.typeId !== undefined) {
+      const ev = app.findRecordById('events', next.eventId);
+      const r = checkAnswers(toEvent(ev).fields, next.typeId, patch.answers ?? next.answers, { required: false });
+      if (r.error) fail('invalid', r.error);
+      next.answers = r.answers;
+    }
     if (patch.email !== undefined) {
       next.email = normEmail(patch.email);
       if (next.email && !EMAIL.test(next.email)) fail('invalid', 'Email invalide');
@@ -474,6 +507,14 @@ export function updateParticipant(e: PbRequestEvent) {
     result = next;
   });
   e.json(200, result);
+}
+
+export function acceptParticipant(e: PbRequestEvent) {
+  const { participant } = requireParticipant($app, e, e.request.pathValue('id'), 'participants.manage');
+  const p = { ...toParticipant(participant), status: 'accepted' as const };
+  writeParticipant(participant, p);
+  $app.save(participant);
+  e.json(200, p);
 }
 
 export function deleteParticipant(e: PbRequestEvent) {
@@ -630,6 +671,50 @@ export function syncOffline(e: PbRequestEvent) {
   e.json(200, result);
 }
 
+// ─── Agents par code d'accès (F-04) ──────────────────────────────────
+
+export function joinEvent(e: PbRequestEvent) {
+  const user = requireUser(e);
+  const code = normCode(body(e).code);
+  $app.runInTransaction((app) => {
+    const event = code ? findBy(app, 'events', "accessCode = {:c} && purgedAt = ''", { c: code })[0] : undefined;
+    if (!event) return fail('not-found', 'Code d\'accès inconnu ou désactivé');
+    const org = app.findRecordById('organizations', event.getString('org'));
+    if (!eventRole(org, event, user.id)) {
+      event.set('agents', [...ids(event, 'agents'), user.id]);
+      app.save(event);
+    }
+  });
+  e.json(200, sessionOf($app, user));
+}
+
+export function setAccessCode(e: PbRequestEvent) {
+  const enabled = body(e).enabled === true;
+  let result: EventInfo | null = null;
+  $app.runInTransaction((app) => {
+    const { event } = requireEvent(app, e, e.request.pathValue('id'), 'event.edit');
+    if (enabled) requireNotPurged(event);
+    let code = '';
+    while (enabled && (!code || findBy(app, 'events', 'accessCode = {:c}', { c: code }).length)) code = newAccessCode();
+    event.set('accessCode', code);
+    // Désactiver le code retire l'accès de tous ceux qui l'ont utilisé (code divulgué)
+    if (!enabled) event.set('agents', []);
+    app.save(event);
+    result = toEvent(event);
+  });
+  e.json(200, result);
+}
+
+export function listEventAgents(e: PbRequestEvent) {
+  const { event } = requireEvent($app, e, e.request.pathValue('id'), 'event.edit');
+  const agents: Member[] = [];
+  for (const id of ids(event, 'agents')) {
+    const u = find($app, 'users', id);
+    if (u) agents.push({ userId: id, email: u.email(), name: u.getString('name'), role: 'agent' });
+  }
+  e.json(200, agents.sort((a, b) => a.name.localeCompare(b.name, 'fr')));
+}
+
 // ─── Protection des données (NF-32 à NF-34, F-77, RG-09) ─────────────
 
 function publicPrivacy(ev: EventInfo): PublicPrivacy {
@@ -778,13 +863,14 @@ export function registrationInfo(e: PbRequestEvent) {
   const r = find($app, 'events', e.request.pathValue('id'));
   if (!r) return fail('not-found', 'Événement introuvable');
   const ev = toEvent(r);
-  const info: RegistrationInfo = { eventName: ev.name, types: ev.types, open: ev.registrationOpen && !ev.purgedAt, privacy: publicPrivacy(ev) };
+  const info: RegistrationInfo = { eventName: ev.name, types: ev.types, open: ev.registrationOpen && !ev.purgedAt, privacy: publicPrivacy(ev), fields: ev.fields };
   e.json(200, info);
 }
 
 export function register(e: PbRequestEvent) {
   const eventId = e.request.pathValue('id');
   const form = body(e) as unknown as RegistrationForm;
+  if (str(form.website).trim()) fail('invalid', 'Inscription refusée'); // champ piège rempli : robot (F-36)
   if (form.consent !== true) fail('invalid', 'Le consentement est obligatoire');
   if (!str(form.lastName).trim()) fail('invalid', 'Le nom est obligatoire');
   const email = normEmail(form.email);
@@ -796,10 +882,12 @@ export function register(e: PbRequestEvent) {
     if (!event || !event.registrationOpen || event.purgedAt) fail('closed', 'Les inscriptions sont fermées');
     if (!event.types.some((t) => t.id === form.typeId)) fail('invalid', 'Profil invalide');
     if (emailTaken(app, eventId, email)) fail('duplicate', 'Cette adresse email est déjà inscrite');
+    const { answers, error } = checkAnswers(event.fields, str(form.typeId), form.answers);
+    if (error) fail('invalid', error);
     token = insertParticipant(app, buildParticipant(eventId, {
       firstName: str(form.firstName), lastName: str(form.lastName), email, phone: str(form.phone),
       company: str(form.company), typeId: str(form.typeId), source: 'form', consentAt: nowIso(),
-    })).token;
+    }, event.requireApproval ? 'pending' : 'accepted', answers)).token;
   });
   e.json(201, { token });
 }
@@ -815,7 +903,9 @@ export function accessPage(e: PbRequestEvent) {
   const page: AccessPage = {
     eventName: event.name, startDate: event.startDate, endDate: event.endDate, venue: event.venue,
     firstName: p.firstName, lastName: p.lastName, company: p.company,
-    type: event.types.find((t) => t.id === p.typeId) ?? null, token: p.token, entryCount: p.entryCount,
+    type: event.types.find((t) => t.id === p.typeId) ?? null, entryCount: p.entryCount,
+    // Pas de QR code tant que l'inscription attend sa validation (F-37)
+    token: p.status === 'pending' ? '' : p.token, status: p.status,
     privacy: publicPrivacy(event),
   };
   e.json(200, page);

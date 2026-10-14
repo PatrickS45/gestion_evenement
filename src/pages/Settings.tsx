@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { errorMessage, useNotify, useStore } from '../app/context';
 import { navigate, publicUrl } from '../app/router';
-import type { EventSnapshot } from '../data/store';
+import type { EventSnapshot, Member } from '../data/store';
 import { can } from '../domain/access';
 import { MAX_TYPES, nextTypeColor, TYPE_PALETTE } from '../domain/colors';
 import { newId } from '../domain/ids';
@@ -10,6 +10,7 @@ import { privacyComplete, purgeDay, type PrivacyPolicy } from '../domain/privacy
 import { parisDay } from '../domain/time';
 import { QrImage, TypeBadge } from '../ui/components';
 import { longDay, PrivacyFields } from '../ui/privacy';
+import { FieldsEditor } from '../ui/fields';
 
 export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
@@ -24,6 +25,19 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
   const [privacy, setPrivacy] = useState<PrivacyPolicy>(event.privacy);
   const [privacyError, setPrivacyError] = useState('');
   const purged = !!event.purgedAt;
+  const [codeAgents, setCodeAgents] = useState<Member[] | null>(null);
+  useEffect(() => {
+    store.listEventAgents(event.id).then(setCodeAgents, () => setCodeAgents([]));
+  }, [store, event.id, event.accessCode]);
+
+  const setAccessCode = async (enabled: boolean) => {
+    const n = codeAgents?.length ?? 0;
+    if (!enabled && !confirm(`Désactiver le code ? ${n ? `Les ${n} agent(s) qui l'ont utilisé perdront aussitôt l'accès à l'événement.` : 'Il ne permettra plus de rejoindre l\'événement.'}`)) return;
+    try {
+      await store.setAccessCode(event.id, enabled);
+      notify(enabled ? 'Nouveau code d\'accès créé' : 'Code désactivé et accès retirés');
+    } catch (err) { notify(errorMessage(err), 'danger'); }
+  };
   const [error, setError] = useState('');
   const registerUrl = publicUrl('inscription', event.id);
   const usage = (typeId: string) => participants.filter((p) => p.typeId === typeId).length;
@@ -73,6 +87,13 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
     } catch (err) { notify(errorMessage(err), 'danger'); }
   };
 
+  const toggleApproval = async () => {
+    try {
+      await store.updateEvent(event.id, { requireApproval: !event.requireApproval });
+      notify(event.requireApproval ? 'Inscriptions acceptées automatiquement' : 'Inscriptions validées manuellement');
+    } catch (err) { notify(errorMessage(err), 'danger'); }
+  };
+
   const duplicate = async () => {
     const name = prompt('Nom du nouvel événement (paramètres et types copiés, sans les participants) :', `${event.name} (copie)`);
     if (!name?.trim()) return;
@@ -95,7 +116,14 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
             <p>
               Inscriptions : <strong style={{ color: event.registrationOpen ? 'var(--ok)' : 'var(--danger)' }}>{event.registrationOpen ? 'ouvertes' : 'fermées'}</strong>
             </p>
-            <p className="muted">Les participants choisissent leur type, s'inscrivent et obtiennent aussitôt leur QR code. Imprimez ce QR code sur une affiche ou partagez le lien.</p>
+            <p className="muted">
+              Les participants choisissent leur type et s'inscrivent ; ils obtiennent leur QR code
+              {event.requireApproval ? ' après acceptation par un administrateur (onglet Participants).' : ' aussitôt.'} Imprimez ce QR code sur une affiche ou partagez le lien.
+            </p>
+            <label className="row" style={{ flexWrap: 'nowrap', cursor: 'pointer' }}>
+              <input type="checkbox" checked={event.requireApproval} onChange={() => void toggleApproval()} disabled={purged} />
+              <span>Valider manuellement chaque inscription avant de délivrer le QR code</span>
+            </label>
             {event.registrationOpen && <p className="small" style={{ wordBreak: 'break-all' }}>{registerUrl}</p>}
             {!event.registrationOpen && !purged && !privacyComplete(event.privacy) && (
               <p className="notice notice-warn">
@@ -167,6 +195,35 @@ export function Settings({ snapshot }: { snapshot: EventSnapshot }) {
         {error && <p role="alert" className="error">{error}</p>}
         <div><button className="btn" type="submit">Enregistrer</button></div>
       </form>
+
+      <section className="card stack" aria-labelledby="fields-title">
+        <h2 id="fields-title" style={{ marginBottom: 0 }}>Questions du formulaire</h2>
+        <p className="muted">Questions supplémentaires posées à l'inscription, éventuellement à certains types seulement. Les réponses alimentent les statistiques.</p>
+        <FieldsEditor key={event.id} fields={event.fields} types={event.types}
+          onSave={async (fields) => { await store.updateEvent(event.id, { fields }); notify('Questions enregistrées'); }} />
+      </section>
+
+      <section className="card stack" aria-labelledby="code-title">
+        <h2 id="code-title" style={{ marginBottom: 0 }}>Code d'accès des agents</h2>
+        <p className="muted">
+          Un agent d'accueil saisit ce code dans l'application pour rejoindre cet événement seul : il scanne et consulte la jauge,
+          sans voir les autres événements ni l'organisation. Désactivez le code s'il a circulé : les accès obtenus avec lui sont retirés.
+        </p>
+        {event.accessCode
+          ? <p style={{ fontFamily: 'ui-monospace, monospace', fontSize: 34, fontWeight: 800, letterSpacing: 6 }} aria-label={`Code : ${event.accessCode.split('').join(' ')}`}>{event.accessCode}</p>
+          : <p>Aucun code actif.</p>}
+        <div className="row">
+          {event.accessCode
+            ? <>
+              <button className="btn btn-secondary" onClick={() => { navigator.clipboard?.writeText(event.accessCode!); notify('Code copié'); }}>Copier le code</button>
+              <button className="btn btn-danger" onClick={() => void setAccessCode(false)}>Désactiver le code</button>
+            </>
+            : <button className="btn" onClick={() => void setAccessCode(true)} disabled={purged}>Créer un code d'accès</button>}
+        </div>
+        {codeAgents && codeAgents.length > 0 && (
+          <p className="small">Ont rejoint avec le code : {codeAgents.map((a) => a.name).join(', ')}.</p>
+        )}
+      </section>
 
       <form className="card stack" onSubmit={savePrivacy} aria-labelledby="privacy-title" noValidate>
         <h2 id="privacy-title" style={{ marginBottom: 0 }}>Données personnelles</h2>

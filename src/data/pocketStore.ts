@@ -7,6 +7,7 @@ import { DEFAULT_TYPES } from '../domain/colors';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
 import { defaultPrivacy, normalizePrivacy, type AuditEntry, type ExportKind, type PrivacyPolicy } from '../domain/privacy';
 import type { EventReport } from '../domain/report';
+import { normalizeFields } from '../domain/fields';
 import {
   compareNames, type Direction, type EventInfo, type Participant, type Passage, type Refusal, type ScanMethod,
 } from '../domain/model';
@@ -26,12 +27,13 @@ const toEvent = (r: RecordModel): EventInfo => ({
   id: r.id, orgId: r.org, name: r.name, startDate: r.startDate, endDate: r.endDate, venue: r.venue,
   capacity: r.capacity, thresholds: r.thresholds ?? DEFAULT_THRESHOLDS, types: r.types ?? DEFAULT_TYPES,
   registrationOpen: r.registrationOpen, createdAt: r.createdAt,
-  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null,
+  privacy: normalizePrivacy(r.privacy, defaultPrivacy()), purgedAt: r.purgedAt || null, accessCode: r.accessCode || null, requireApproval: !!r.requireApproval, fields: normalizeFields(r.fields),
 });
 
 const toParticipant = (r: RecordModel): Participant => ({
   id: r.id, eventId: r.event, firstName: r.firstName, lastName: r.lastName, email: r.email, phone: r.phone,
   company: r.company, typeId: r.typeId, token: r.token, tokenRevoked: r.tokenRevoked, source: r.source,
+  status: r.status === 'pending' ? 'pending' : 'accepted', answers: r.answers ?? {},
   consentAt: r.consentAt || null, createdAt: r.createdAt, inside: r.inside, entryCount: r.entryCount,
   firstEntryAt: r.firstEntryAt || null, lastMoveAt: r.lastMoveAt || null,
 });
@@ -206,6 +208,10 @@ export class PocketStore implements EventStore {
     await this.call('DELETE', `/api/ec/participants/${encodeURIComponent(id)}`);
   }
 
+  acceptParticipant(id: string) {
+    return this.call<Participant>('POST', `/api/ec/participants/${encodeURIComponent(id)}/accept`);
+  }
+
   revokeToken(id: string) {
     return this.call<Participant>('POST', `/api/ec/participants/${encodeURIComponent(id)}/token`);
   }
@@ -242,6 +248,21 @@ export class PocketStore implements EventStore {
 
   getAccessPage(token: string) {
     return this.orNull(() => this.call<AccessPage>('GET', `/api/ec/public/access/${encodeURIComponent(token)}`));
+  }
+
+  // ── Agents par code d'accès ────────────────────────────────────────
+
+  async joinEvent(code: string) {
+    this.session = await this.call<Session>('POST', '/api/ec/join', { code });
+    return this.session;
+  }
+
+  setAccessCode(eventId: string, enabled: boolean) {
+    return this.call<EventInfo>('PUT', `/api/ec/events/${encodeURIComponent(eventId)}/access-code`, { enabled });
+  }
+
+  listEventAgents(eventId: string) {
+    return this.call<Member[]>('GET', `/api/ec/events/${encodeURIComponent(eventId)}/agents`);
   }
 
   // ── Protection des données ─────────────────────────────────────────
@@ -349,7 +370,8 @@ export class PocketStore implements EventStore {
       merge(participants, parts, toParticipant);
       merge(passages, pass, toPassage);
       merge(refusals, refs, toRefusal);
-      role = session?.memberships.find((m) => m.orgId === event!.orgId)?.role ?? null;
+      role = session?.memberships.find((m) => m.orgId === event!.orgId)?.role
+        ?? (session?.eventAccess.some((a) => a.eventId === eventId) ? 'agent' : null); // rejoint avec son code (F-04)
     };
 
     // Événement introuvable ou inaccessible : null. Toute autre erreur (réseau, serveur surchargé,

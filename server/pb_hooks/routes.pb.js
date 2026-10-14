@@ -46,11 +46,17 @@ routerAdd('POST', '/api/ec/events/{id}/sync', (e) => require(`${__hooks}/lib/ec.
 
 routerAdd('PATCH', '/api/ec/participants/{id}', (e) => require(`${__hooks}/lib/ec.cjs`).updateParticipant(e));
 routerAdd('DELETE', '/api/ec/participants/{id}', (e) => require(`${__hooks}/lib/ec.cjs`).deleteParticipant(e));
+routerAdd('POST', '/api/ec/participants/{id}/accept', (e) => require(`${__hooks}/lib/ec.cjs`).acceptParticipant(e));
 routerAdd('POST', '/api/ec/participants/{id}/token', (e) => require(`${__hooks}/lib/ec.cjs`).revokeToken(e));
 
 routerAdd('GET', '/api/ec/public/events/{id}', (e) => require(`${__hooks}/lib/ec.cjs`).registrationInfo(e));
 routerAdd('POST', '/api/ec/public/events/{id}/register', (e) => require(`${__hooks}/lib/ec.cjs`).register(e));
 routerAdd('GET', '/api/ec/public/access/{token}', (e) => require(`${__hooks}/lib/ec.cjs`).accessPage(e));
+
+// Agents par code d'accès (F-04)
+routerAdd('POST', '/api/ec/join', (e) => require(`${__hooks}/lib/ec.cjs`).joinEvent(e));
+routerAdd('PUT', '/api/ec/events/{id}/access-code', (e) => require(`${__hooks}/lib/ec.cjs`).setAccessCode(e));
+routerAdd('GET', '/api/ec/events/{id}/agents', (e) => require(`${__hooks}/lib/ec.cjs`).listEventAgents(e));
 
 // Protection des données (NF-32 à NF-34, F-77, RG-09)
 routerAdd('GET', '/api/ec/orgs/{org}/privacy', (e) => require(`${__hooks}/lib/ec.cjs`).getOrgPrivacy(e));

@@ -26,3 +26,16 @@ export function gaugePercent(present: number, capacity: number): number {
   if (capacity <= 0) return 0;
   return Math.round((present / capacity) * 100);
 }
+
+const RANK: Record<GaugeLevel, number> = { normal: 0, attention: 1, critical: 2, over: 3 };
+
+/**
+ * Alertes actives (F-67) : prévient quand la jauge monte d'un niveau. Pour ne pas répéter l'alerte quand
+ * la présence oscille autour d'un seuil, un niveau déjà signalé ne l'est à nouveau qu'après un retour à la normale.
+ * @param alerted niveau le plus haut déjà signalé
+ */
+export function gaugeAlert(alerted: GaugeLevel, level: GaugeLevel): { alert: GaugeLevel | null; alerted: GaugeLevel } {
+  if (level === 'normal') return { alert: null, alerted: 'normal' };
+  if (RANK[level] > RANK[alerted]) return { alert: level, alerted: level };
+  return { alert: null, alerted };
+}

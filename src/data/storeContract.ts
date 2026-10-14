@@ -4,8 +4,8 @@ import { newRecordId } from '../domain/ids';
 import type { Direction } from '../domain/model';
 import type { EventSnapshot, EventStore, OfflinePassage } from './store';
 
-/** Deux postes (deux sessions) sur les mêmes données. */
-export type StationsFactory = () => Promise<readonly [EventStore, EventStore]>;
+/** Trois postes (trois sessions) sur les mêmes données. */
+export type StationsFactory = () => Promise<readonly [EventStore, EventStore, EventStore]>;
 
 const PASSWORD = 'motdepasse-solide';
 let counter = 0;
@@ -26,7 +26,7 @@ export function snapshotOf(store: EventStore, eventId: string): Promise<EventSna
 export function describeStoreContract(name: string, twoStations: StationsFactory) {
   /** Poste a : Claire, propriétaire de l'organisation. Poste b : Bruno, agent d'accueil. */
   async function setup() {
-    const [a, b] = await twoStations();
+    const [a, b, c] = await twoStations();
     const n = `${Date.now().toString(36)}${++counter}`;
     const emails = { claire: `claire-${n}@x.fr`, bruno: `bruno-${n}@x.fr` };
     const session = await a.signUp({ name: 'Claire Owner', email: emails.claire, password: PASSWORD, organization: 'Salon Pro' });
@@ -38,7 +38,7 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
       { firstName: 'Léa', lastName: 'Petit', email: 'lea@x.fr', typeId: 'magasin', source: 'manual' },
       { firstName: 'Marc', lastName: 'Roy', email: 'marc@x.fr', typeId: 'exposant', source: 'import', company: 'Roy & Fils' },
     ]);
-    return { a, b, orgId, emails, event, lea: lea!, marc: marc! };
+    return { a, b, c, orgId, emails, event, lea: lea!, marc: marc! };
   }
 
   describe(`${name} — comptes, organisations et droits`, () => {
@@ -347,6 +347,135 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
       await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });
       await expect(a.register(event.id, { ...form, consent: false })).rejects.toMatchObject({ code: 'invalid' });
       await expect(a.register(event.id, { ...form, email: 'lea@x.fr' })).rejects.toMatchObject({ code: 'duplicate' });
+    });
+
+    it("validation manuelle : en attente, pas de QR code, refusé au scan, hors des inscrits, jusqu'à acceptation (F-37)", async () => {
+      const { a, b, event } = await setup();
+      await a.updateEvent(event.id, { registrationOpen: true, requireApproval: true, privacy: { contact: 'dpo@salon.fr' } });
+      const { token } = await a.register(event.id, form);
+      expect(await a.getAccessPage(token)).toMatchObject({ status: 'pending', token: '', firstName: 'Sophie' });
+
+      const sophie = (await snapshotOf(a, event.id))!.participants.find((p) => p.email === 'sophie@x.fr')!;
+      expect(sophie).toMatchObject({ status: 'pending', source: 'form' });
+      expect((await b.scan(event.id, sophie.token, 'in', 'camera', 'entree')).decision).toEqual({ result: 'refused', reason: 'unknown' });
+      await expect(b.acceptParticipant(sophie.id)).rejects.toMatchObject({ code: 'forbidden' }); // agent
+
+      expect(await a.acceptParticipant(sophie.id)).toMatchObject({ status: 'accepted' });
+      expect(await a.getAccessPage(token)).toMatchObject({ status: 'accepted', token });
+      expect((await b.scan(event.id, sophie.token, 'in', 'camera', 'entree')).decision.result).toBe('accepted');
+    });
+
+    it('sans validation manuelle, une inscription est acceptée aussitôt ; les ajouts par l\'équipe le sont toujours', async () => {
+      const { a, event, lea } = await setup();
+      await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });
+      const { token } = await a.register(event.id, form);
+      expect(await a.getAccessPage(token)).toMatchObject({ status: 'accepted', token });
+      expect(lea.status).toBe('accepted');
+    });
+
+    it('champs personnalisés : demandés selon le type, obligatoires exigés, réponses enregistrées (F-33)', async () => {
+      const { a, event } = await setup();
+      const updated = await a.updateEvent(event.id, {
+        registrationOpen: true, privacy: { contact: 'dpo@salon.fr' },
+        fields: [
+          { id: 'pdv', label: 'Nombre de points de vente', kind: 'number', options: [], required: true, typeIds: ['magasin'] },
+          { id: 'region', label: 'Région', kind: 'choice', options: ['Centre', 'Autre'], required: false, typeIds: [] },
+          { id: 'vide', label: '', kind: 'text', options: [], required: false, typeIds: [] }, // invalide : écarté
+        ],
+      });
+      expect(updated.fields.map((f) => f.id)).toEqual(['pdv', 'region']);
+      expect((await a.getRegistrationInfo(event.id))!.fields).toHaveLength(2);
+
+      const magasin = { ...form, typeId: 'magasin', email: 'mag@x.fr' };
+      await expect(a.register(event.id, magasin)).rejects.toMatchObject({ code: 'invalid', message: 'Renseignez « Nombre de points de vente »' });
+      await a.register(event.id, { ...magasin, answers: { pdv: '3', region: 'Centre', inconnu: 'x' } });
+      await a.register(event.id, { ...form, answers: { pdv: 99, region: 'Autre' } }); // exposant : pdv ignoré
+      const snap = (await snapshotOf(a, event.id))!;
+      expect(snap.participants.find((p) => p.email === 'mag@x.fr')!.answers).toEqual({ pdv: 3, region: 'Centre' });
+      expect(snap.participants.find((p) => p.email === 'sophie@x.fr')!.answers).toEqual({ region: 'Autre' });
+
+      // L'équipe peut compléter plus tard : les champs obligatoires ne sont pas exigés à l'ajout
+      const [added] = await a.addParticipants(event.id, [{ firstName: 'Z', lastName: 'Imp', email: 'imp@x.fr', typeId: 'magasin', source: 'import', answers: { region: 'Centre' } }]);
+      expect(added!.answers).toEqual({ region: 'Centre' });
+      expect((await a.updateParticipant(added!.id, { answers: { pdv: 7, region: 'Centre' } })).answers).toEqual({ pdv: 7, region: 'Centre' });
+      await expect(a.updateParticipant(added!.id, { answers: { pdv: 'beaucoup' } })).rejects.toMatchObject({ code: 'invalid' });
+      expect((await a.duplicateEvent(event.id, 'Copie')).fields.map((f) => f.id)).toEqual(['pdv', 'region']);
+    });
+
+    it('refuse une inscription dont le champ piège est rempli (F-36)', async () => {
+      const { a, event } = await setup();
+      await a.updateEvent(event.id, { registrationOpen: true, privacy: { contact: 'dpo@salon.fr' } });
+      await expect(a.register(event.id, { ...form, website: 'https://spam.example' })).rejects.toMatchObject({ code: 'invalid' });
+      expect((await snapshotOf(a, event.id))!.participants.some((p) => p.email === 'sophie@x.fr')).toBe(false);
+    });
+  });
+
+  describe(`${name} — agents par code d'accès (F-04)`, () => {
+    /** Poste c : Zoé, sans organisation, qui rejoindra l'événement avec son code. */
+    async function newcomer(z: EventStore) {
+      const n = `${Date.now().toString(36)}${++counter}`;
+      const session = await z.signUp({ name: 'Zoé Agent', email: `zoe-${n}@x.fr`, password: PASSWORD, organization: '' });
+      return { z, session };
+    }
+
+    it("sans organisation, un compte ne voit rien ; avec le code, il rejoint cet événement seul, comme agent", async () => {
+      const { a, c, orgId, event, lea } = await setup();
+      const other = await a.createEvent(orgId, { name: 'Autre salon', startDate: '2027-05-01', endDate: '2027-05-01' });
+      const { z, session } = await newcomer(c);
+      expect(session).toMatchObject({ memberships: [], eventAccess: [] });
+      expect(await snapshotOf(z, event.id)).toBeNull();
+
+      const { accessCode } = await a.setAccessCode(event.id, true);
+      expect(accessCode).toMatch(/^[A-HJ-KM-NP-Z2-9]{8}$/);
+      const joined = await z.joinEvent(` ${accessCode!.slice(0, 4).toLowerCase()}-${accessCode!.slice(4)} `); // saisie tolérante
+      expect(joined.memberships).toEqual([]);
+      expect(joined.eventAccess).toEqual([{ eventId: event.id, eventName: 'Salon', startDate: '2027-03-11', endDate: '2027-03-12' }]);
+
+      const snap = (await snapshotOf(z, event.id))!;
+      expect(snap.role).toBe('agent');
+      expect((await z.scan(event.id, lea.token, 'in', 'camera', 'entree')).decision.result).toBe('accepted');
+      await expect(z.updateEvent(event.id, { name: 'x' })).rejects.toMatchObject({ code: 'forbidden' });
+      await expect(z.closeDay(event.id, 'x')).rejects.toMatchObject({ code: 'forbidden' });
+      await expect(z.listEvents(orgId)).rejects.toMatchObject({ code: 'not-found' });
+      expect(await snapshotOf(z, other.id)).toBeNull(); // pas les autres événements de l'organisation
+      expect((await a.listEventAgents(event.id)).map((m) => m.name)).toEqual(['Zoé Agent']);
+      await expect(z.listEventAgents(event.id)).rejects.toMatchObject({ code: 'forbidden' });
+    });
+
+    it("l'agent arrivé par code suit l'événement en temps réel", async () => {
+      const { a, c, event, marc } = await setup();
+      const { z } = await newcomer(c);
+      await z.joinEvent((await a.setAccessCode(event.id, true)).accessCode!);
+      const seen: number[] = [];
+      const unsubscribe = z.subscribe(event.id, (s) => s && seen.push(s.participants.filter((p) => p.inside).length));
+      await vi.waitFor(() => expect(seen).toEqual([0]));
+      await a.scan(event.id, marc.token, 'in', 'camera', 'entree');
+      await vi.waitFor(() => expect(seen.at(-1)).toBe(1), { timeout: 3000 });
+      unsubscribe();
+    });
+
+    it("désactiver le code retire l'accès ; le réactiver donne un nouveau code", async () => {
+      const { a, c, event } = await setup();
+      const { z } = await newcomer(c);
+      const first = (await a.setAccessCode(event.id, true)).accessCode!;
+      await z.joinEvent(first);
+      expect((await a.setAccessCode(event.id, false)).accessCode).toBeNull();
+      expect(await snapshotOf(z, event.id)).toBeNull();
+      expect((await z.getSession())!.eventAccess).toEqual([]);
+      await expect(z.joinEvent(first)).rejects.toMatchObject({ code: 'not-found' });
+      const second = (await a.setAccessCode(event.id, true)).accessCode!;
+      expect(second).not.toBe(first);
+      await expect(z.joinEvent(first)).rejects.toMatchObject({ code: 'not-found' });
+    });
+
+    it('code inconnu refusé ; seul un administrateur gère le code ; il faut être connecté', async () => {
+      const { a, b, c, event } = await setup();
+      const { z } = await newcomer(c);
+      await expect(z.joinEvent('ZZZZZZZZ')).rejects.toMatchObject({ code: 'not-found' });
+      await expect(b.setAccessCode(event.id, true)).rejects.toMatchObject({ code: 'forbidden' }); // agent de l'organisation
+      const code = (await a.setAccessCode(event.id, true)).accessCode!;
+      await z.signOut();
+      await expect(z.joinEvent(code)).rejects.toMatchObject({ code: 'unauthenticated' });
     });
   });
 

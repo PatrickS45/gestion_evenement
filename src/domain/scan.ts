@@ -14,7 +14,8 @@ export type ScanDecision =
  * `participant` vaut undefined si le jeton lu ne correspond à personne.
  */
 export function decideScan(participant: Participant | undefined, direction: Direction): ScanDecision {
-  if (!participant || participant.tokenRevoked) return { result: 'refused', reason: 'unknown' };
+  // Jeton révoqué (RG-06) ou inscription en attente de validation (F-37) : comme inconnu
+  if (!participant || participant.tokenRevoked || participant.status === 'pending') return { result: 'refused', reason: 'unknown' };
 
   if (direction === 'in') {
     if (participant.inside) return { result: 'refused', reason: 'already-inside', since: participant.lastMoveAt };

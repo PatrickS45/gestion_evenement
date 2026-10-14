@@ -4,6 +4,8 @@ import { navigate } from '../app/router';
 import type { AccessPage, RegistrationForm, RegistrationInfo } from '../data/store';
 import { QrImage, TypeBadge } from '../ui/components';
 import { PublicPrivacyNotice } from '../ui/privacy';
+import { FieldInput, type AnswerDraft } from '../ui/fields';
+import { fieldsFor } from '../domain/fields';
 
 const JUST_REGISTERED = 'event-control:just-registered';
 const longDate = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -11,7 +13,8 @@ const longDate = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr
 export function Register({ eventId }: { eventId: string }) {
   const store = useStore();
   const [info, setInfo] = useState<RegistrationInfo | null | undefined>(undefined);
-  const [form, setForm] = useState<RegistrationForm>({ firstName: '', lastName: '', email: '', phone: '', company: '', typeId: '', consent: false });
+  const [form, setForm] = useState<RegistrationForm>({ firstName: '', lastName: '', email: '', phone: '', company: '', typeId: '', consent: false, website: '' });
+  const [answers, setAnswers] = useState<AnswerDraft>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -28,7 +31,7 @@ export function Register({ eventId }: { eventId: string }) {
     if (!form.consent) { setError('Votre accord est nécessaire pour vous inscrire.'); return; }
     setError(''); setBusy(true);
     try {
-      const { token } = await store.register(eventId, form);
+      const { token } = await store.register(eventId, { ...form, answers });
       try { sessionStorage.setItem(JUST_REGISTERED, token); } catch { /* message de confirmation non affiché */ }
       navigate('acces', token);
     } catch (err) { setError(errorMessage(err)); setBusy(false); }
@@ -71,7 +74,15 @@ export function Register({ eventId }: { eventId: string }) {
         </div>
         <div className="field"><label htmlFor="r-email" className="required">Adresse email</label><input id="r-email" type="email" className="input" autoComplete="email" value={form.email} onChange={set('email')} /></div>
         <div className="field"><label htmlFor="r-company">Société ou enseigne</label><input id="r-company" className="input" autoComplete="organization" value={form.company} onChange={set('company')} /></div>
+        {/* Champ piège (F-36) : invisible et hors du parcours au clavier ; seul un robot le remplit */}
+        <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', width: 1, height: 1, overflow: 'hidden' }}>
+          <label htmlFor="r-website">Site web</label>
+          <input id="r-website" name="website" tabIndex={-1} autoComplete="off" value={form.website ?? ''} onChange={set('website')} />
+        </div>
         <div className="field"><label htmlFor="r-phone">Téléphone</label><input id="r-phone" type="tel" className="input" autoComplete="tel" value={form.phone} onChange={set('phone')} /></div>
+        {form.typeId && fieldsFor(info.fields, form.typeId).map((f) => (
+          <FieldInput key={f.id} field={f} idPrefix="r-field" value={answers[f.id]} onChange={(v) => setAnswers({ ...answers, [f.id]: v })} />
+        ))}
 
         <label className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap', cursor: 'pointer' }}>
           <input type="checkbox" checked={form.consent} onChange={set('consent')} style={{ width: 18, height: 18, marginTop: 3 }} />
@@ -111,15 +122,26 @@ export function Access({ token }: { token: string }) {
       <div className="public-card stack" style={{ alignItems: 'center', textAlign: 'center' }}>
         {justRegistered && (
           <p role="status" className="notice notice-ok" style={{ width: '100%' }}>
-            Inscription confirmée. Gardez cette page : ajoutez-la à vos favoris ou faites une capture d'écran.
+            {page.status === 'pending'
+              ? 'Inscription enregistrée. Gardez le lien de cette page : ajoutez-la à vos favoris.'
+              : 'Inscription confirmée. Gardez cette page : ajoutez-la à vos favoris ou faites une capture d\'écran.'}
           </p>
         )}
         <p className="muted" style={{ fontWeight: 600 }}>{page.eventName}</p>
         <h1 style={{ fontSize: 26 }}>{[page.firstName, page.lastName].filter(Boolean).join(' ')}</h1>
         {page.company && <p className="muted">{page.company}</p>}
         {page.type && <TypeBadge type={page.type} large />}
-        <QrImage text={page.token} size={260} label="Votre QR code d'accès" />
-        <p>Présentez ce QR code <strong>à chaque entrée et à chaque sortie</strong>.</p>
+        {page.status === 'pending'
+          ? (
+            <p className="notice notice-info" role="status" style={{ width: '100%' }}>
+              Inscription reçue, en attente de validation par l'organisateur. Revenez sur cette page :
+              votre QR code d'accès s'affichera dès qu'elle sera acceptée.
+            </p>
+          )
+          : <>
+            <QrImage text={page.token} size={260} label="Votre QR code d'accès" />
+            <p>Présentez ce QR code <strong>à chaque entrée et à chaque sortie</strong>.</p>
+          </>}
         <p className="small">
           {page.startDate === page.endDate ? longDate(page.startDate) : `Du ${longDate(page.startDate)} au ${longDate(page.endDate)}`}
           {page.venue && <><br />{page.venue}</>}

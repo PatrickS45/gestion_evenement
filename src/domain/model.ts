@@ -1,4 +1,5 @@
 // Modèle métier (cahier des charges, section 7). Aucune dépendance technique.
+import type { Answers, CustomField } from './fields';
 import type { PrivacyPolicy } from './privacy';
 
 /** Date et heure au format ISO 8601. */
@@ -13,6 +14,9 @@ export type ScanMethod = 'camera' | 'scanner' | 'search' | 'manual';
 export type PassageOrigin = 'online' | 'offline' | 'closing';
 
 export type ParticipantSource = 'manual' | 'import' | 'form';
+
+/** Inscription acceptée, ou en attente de validation par un administrateur (F-37). */
+export type ParticipantStatus = 'accepted' | 'pending';
 
 export interface ParticipantType {
   id: string;
@@ -59,6 +63,12 @@ export interface EventInfo {
   privacy: PrivacyPolicy;
   /** Date de la purge des données personnelles ; l'événement ne garde alors que son bilan (F-77). */
   purgedAt: Iso | null;
+  /** Code d'accès des agents à cet événement seul (F-04) ; null s'il est désactivé. */
+  accessCode: string | null;
+  /** Validation manuelle : les inscriptions du formulaire attendent l'accord d'un administrateur (F-37). */
+  requireApproval: boolean;
+  /** Champs personnalisés du formulaire (F-33). */
+  fields: CustomField[];
 }
 
 export interface Participant {
@@ -74,6 +84,10 @@ export interface Participant {
   token: string;
   tokenRevoked: boolean;
   source: ParticipantSource;
+  /** En attente : pas de QR code délivré, refusé au scan, hors des statistiques (F-37). */
+  status: ParticipantStatus;
+  /** Réponses aux champs personnalisés, par identifiant de champ (F-33). */
+  answers: Answers;
   consentAt: Iso | null;
   createdAt: Iso;
   /** Présence actuelle : vrai si le dernier passage est une entrée (RG-01). */
@@ -119,6 +133,11 @@ export interface Refusal {
 /** Ordre alphabétique des participants : nom, puis prénom. */
 export function compareNames(a: Pick<Participant, 'firstName' | 'lastName'>, b: Pick<Participant, 'firstName' | 'lastName'>): number {
   return a.lastName.localeCompare(b.lastName, 'fr') || a.firstName.localeCompare(b.firstName, 'fr');
+}
+
+/** Participants dont l'inscription est acceptée : seuls comptés comme inscrits (F-37). */
+export function accepted<T extends Pick<Participant, 'status'>>(participants: T[]): T[] {
+  return participants.filter((p) => p.status !== 'pending');
 }
 
 export function fullName(p: Pick<Participant, 'firstName' | 'lastName'>): string {
