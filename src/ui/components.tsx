@@ -1,7 +1,7 @@
 // Composants d'interface partagés.
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import QRCode from 'qrcode';
 import type { ParticipantType } from '../domain/model';
+import { loadQrCode } from '../app/lazy';
 import { GAUGE_LEVELS, gaugePercent, type GaugeLevel } from '../domain/gauge';
 import { textOn } from '../domain/colors';
 
@@ -49,7 +49,8 @@ export function QrImage({ text, size = 240, label }: { text: string; size?: numb
   const [src, setSrc] = useState('');
   useEffect(() => {
     let alive = true;
-    QRCode.toDataURL(text, { width: size, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#1c1d22', light: '#ffffff' } })
+    loadQrCode()
+      .then((QRCode) => QRCode.toDataURL(text, { width: size, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#1c1d22', light: '#ffffff' } }))
       .then((url) => { if (alive) setSrc(url); })
       .catch(() => setSrc(''));
     return () => { alive = false; };

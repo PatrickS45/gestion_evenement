@@ -1,13 +1,11 @@
-import { useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { useEventSnapshot } from '../app/context';
 import { href } from '../app/router';
 import { can, type Action } from '../domain/access';
 import { UserMeta } from './Home';
-import { Participants } from './Participants';
 import { Scan } from './Scan';
 import { Live } from './Live';
-import { Settings } from './Settings';
-import { Exports } from './Exports';
+import { LazyExports, LazyParticipants, LazySettings } from '../app/lazy';
 import { StationBar } from '../ui/StationBar';
 import { RetentionBanner } from '../ui/privacy';
 import { GaugeAlerts } from '../ui/GaugeAlerts';
@@ -65,9 +63,11 @@ export function EventShell({ eventId, section }: { eventId: string; section: str
         <h1 className="sr-only">{current.label} – {event.name}</h1>
         {current.id === 'direct' && <Live snapshot={snapshot} />}
         {current.id === 'scan' && <Scan snapshot={snapshot} />}
-        {current.id === 'participants' && <Participants snapshot={snapshot} />}
-        {current.id === 'exports' && <Exports snapshot={snapshot} />}
-        {current.id === 'parametres' && <Settings snapshot={snapshot} />}
+        <Suspense fallback={<p role="status">Chargement…</p>}>
+          {current.id === 'participants' && <LazyParticipants snapshot={snapshot} />}
+          {current.id === 'exports' && <LazyExports snapshot={snapshot} />}
+          {current.id === 'parametres' && <LazySettings snapshot={snapshot} />}
+        </Suspense>
       </main>
     </>
   );
