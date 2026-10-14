@@ -2,8 +2,87 @@
 // Hors ligne, deux postes ne peuvent pas se coordonner : un participant peut être entré deux fois.
 // Les passages arrivent au serveur en retard mais avec leur heure réelle ; le journal du participant
 // est alors rejoué dans l'ordre chronologique, et la présence en découle (RG-01, RG-02).
-import type { Participant, Passage } from './model';
-import { toMs } from './time';
+// Module exécuté aussi par le serveur (moteur des hooks PocketBase, sans Intl) : pas d'import de ./time.
+import type { Direction, Iso, Participant, Passage, RefusalReason, ScanMethod } from './model';
+
+// ─── Lots envoyés par un poste au retour du réseau ───────────────────
+
+/** Passage validé sur un poste hors ligne ; l'identifiant est créé par le poste (envoi rejouable). */
+export interface OfflinePassage {
+  id: string;
+  participantId: string;
+  direction: Direction;
+  /** Heure réelle du passage, corrigée du décalage d'horloge du poste. */
+  at: Iso;
+  method: ScanMethod;
+}
+
+/** Refus décidé sur un poste hors ligne, journalisé comme en ligne. */
+export interface OfflineRefusal {
+  id: string;
+  reason: RefusalReason;
+  at: Iso;
+  method: ScanMethod;
+  participantId: string | null;
+  sample: string;
+}
+
+export interface SyncBatch {
+  stationId: string;
+  passages: OfflinePassage[];
+  refusals: OfflineRefusal[];
+}
+
+/** Sort d'un passage envoyé : compté, doublon hors ligne (F-63), ou rejeté (participant supprimé, données invalides). */
+export type SyncStatus = 'counted' | 'duplicate' | 'rejected';
+
+export interface SyncResult {
+  passages: { id: string; status: SyncStatus }[];
+}
+
+/** Taille maximale d'un lot ; au-delà, le poste envoie en plusieurs fois. */
+export const SYNC_MAX = 500;
+/** Avance tolérée sur l'heure du serveur ; en deçà, l'heure est ramenée à celle du serveur. */
+export const CLOCK_TOLERANCE_MS = 5 * 60_000;
+
+/** Identifiant créé par un poste : 15 caractères [a-z0-9], le format des enregistrements du serveur. */
+export const RECORD_ID = /^[a-z0-9]{15}$/;
+
+const DIRECTIONS: readonly string[] = ['in', 'out'];
+const METHODS: readonly string[] = ['camera', 'scanner', 'search', 'manual'];
+const REASONS: readonly string[] = ['unknown', 'already-inside'];
+const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+/** Heure d'un passage reçu : null si illisible ou trop en avance sur le serveur. */
+function receivedAt(v: unknown, nowMs: number): Iso | null {
+  const t = typeof v === 'string' ? Date.parse(v) : NaN;
+  if (!Number.isFinite(t) || t > nowMs + CLOCK_TOLERANCE_MS) return null;
+  return new Date(Math.min(t, nowMs)).toISOString();
+}
+
+/** Passage reçu d'un poste, vérifié ; null s'il est invalide. */
+export function parseOfflinePassage(raw: unknown, nowMs: number): OfflinePassage | null {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const at = receivedAt(r.at, nowMs);
+  const id = text(r.id, 15);
+  const participantId = text(r.participantId, 40);
+  if (!at || !RECORD_ID.test(id) || !participantId || !DIRECTIONS.includes(r.direction as string) || !METHODS.includes(r.method as string)) return null;
+  return { id, participantId, direction: r.direction as Direction, at, method: r.method as ScanMethod };
+}
+
+/** Refus reçu d'un poste, vérifié ; null s'il est invalide. */
+export function parseOfflineRefusal(raw: unknown, nowMs: number): OfflineRefusal | null {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const at = receivedAt(r.at, nowMs);
+  const id = text(r.id, 15);
+  if (!at || !RECORD_ID.test(id) || !REASONS.includes(r.reason as string) || !METHODS.includes(r.method as string)) return null;
+  return {
+    id, reason: r.reason as RefusalReason, at, method: r.method as ScanMethod,
+    participantId: text(r.participantId, 40) || null, sample: text(r.sample, 12),
+  };
+}
+
+// ─── Rejeu du journal d'un participant ───────────────────────────────
 
 export interface ParticipantReplay {
   inside: boolean;
@@ -17,11 +96,11 @@ export interface ParticipantReplay {
   duplicates: Set<string>;
 }
 
-/** Ordre du journal : heure réelle, puis, à la même milliseconde, l'ordre d'enregistrement fourni. */
+/** Ordre du journal : heure réelle, puis identifiant, pour que chaque rejeu donne le même résultat. */
 function chronological(passages: Passage[]): Passage[] {
   return passages
-    .map((p, i) => ({ p, t: toMs(p.at), i }))
-    .sort((a, b) => a.t - b.t || a.i - b.i)
+    .map((p) => ({ p, t: Date.parse(p.at) }))
+    .sort((a, b) => a.t - b.t || (a.p.id < b.p.id ? -1 : a.p.id > b.p.id ? 1 : 0))
     .map(({ p }) => p);
 }
 

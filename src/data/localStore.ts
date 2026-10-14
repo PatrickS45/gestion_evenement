@@ -4,6 +4,7 @@
 // Les droits y sont vérifiés comme ils le seront par le serveur (NF-20).
 import { can, type Action, type Role } from '../domain/access';
 import { compareNames, type EventInfo, type Organization, type Participant, type Passage, type Refusal, type ScanMethod, type User } from '../domain/model';
+import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncBatch, type SyncResult, type SyncStatus } from '../domain/offline';
 import { applyScan, decideScan } from '../domain/scan';
 import { DEFAULT_TYPES } from '../domain/colors';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
@@ -473,6 +474,50 @@ export class LocalStore implements EventStore {
         count++;
       }
       return count;
+    });
+  }
+
+  async syncOffline(eventId: string, batch: SyncBatch): Promise<SyncResult> {
+    if (batch.passages.length + batch.refusals.length > SYNC_MAX) throw new StoreError('invalid', 'Lot trop volumineux');
+    return this.transaction([eventId], (db) => {
+      this.requireEvent(db, eventId, 'scan');
+      const agent = this.requireUser(db);
+      const nowMs = this.now().getTime();
+      const base = { eventId, agentId: agent.id, agentName: agent.name, stationId: String(batch.stationId ?? '').slice(0, 60) };
+      const status = new Map<string, SyncStatus>();
+
+      // Passages regroupés par participant, puis journal de chacun rejoué (F-63)
+      const byParticipant = new Map<string, Passage[]>();
+      for (const raw of batch.passages) {
+        const p = parseOfflinePassage(raw, nowMs);
+        const participant = p && db.participants[p.participantId];
+        const elsewhere = p && db.passages.some((x) => x.id === p.id && x.participantId !== p.participantId);
+        if (!p || !participant || participant.eventId !== eventId || elsewhere) {
+          status.set(String((raw as { id?: unknown })?.id ?? ''), 'rejected');
+          continue;
+        }
+        const list = byParticipant.get(p.participantId) ?? [];
+        list.push({ ...base, ...p, typeId: participant.typeId, origin: 'offline', offlineDuplicate: false });
+        byParticipant.set(p.participantId, list);
+      }
+      for (const [participantId, received] of byParticipant) {
+        const known = db.passages.filter((x) => x.participantId === participantId);
+        const r = reconcile(db.participants[participantId]!, known, received);
+        const changed = new Map(r.changed.map((x) => [x.id, x]));
+        db.passages = db.passages.map((x) => changed.get(x.id) ?? x).concat(r.added);
+        db.participants[participantId] = r.participant;
+        const flags = new Map([...known.map((x) => changed.get(x.id) ?? x), ...r.added].map((x) => [x.id, x.offlineDuplicate]));
+        for (const p of received) status.set(p.id, flags.get(p.id) ? 'duplicate' : 'counted');
+      }
+
+      for (const raw of batch.refusals) {
+        const r = parseOfflineRefusal(raw, nowMs);
+        if (r && !db.refusals.some((x) => x.id === r.id)) db.refusals.push({ ...base, ...r });
+      }
+      return { passages: batch.passages.map((raw) => {
+        const id = String((raw as { id?: unknown })?.id ?? '');
+        return { id, status: status.get(id) ?? 'rejected' };
+      }) };
     });
   }
 

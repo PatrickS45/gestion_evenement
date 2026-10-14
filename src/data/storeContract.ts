@@ -1,6 +1,8 @@
 // Suite de tests du contrat EventStore, commune à l'implémentation locale et au serveur PocketBase :
 // les deux doivent appliquer les mêmes règles de gestion et les mêmes droits (NF-26).
-import type { EventSnapshot, EventStore } from './store';
+import { newRecordId } from '../domain/ids';
+import type { Direction } from '../domain/model';
+import type { EventSnapshot, EventStore, OfflinePassage } from './store';
 
 /** Deux postes (deux sessions) sur les mêmes données. */
 export type StationsFactory = () => Promise<readonly [EventStore, EventStore]>;
@@ -229,6 +231,93 @@ export function describeStoreContract(name: string, twoStations: StationsFactory
       const snap = (await snapshotOf(a, event.id))!;
       expect(snap.participants.every((p) => !p.inside)).toBe(true);
       expect(snap.passages.filter((p) => p.origin === 'closing')).toHaveLength(2);
+    });
+  });
+
+  describe(`${name} — hors ligne (F-61 à F-63)`, () => {
+    const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    const offline = (participantId: string, direction: Direction, minutesAgo: number): OfflinePassage =>
+      ({ id: newRecordId(), participantId, direction, at: ago(minutesAgo), method: 'camera' });
+    const statuses = (r: { passages: { status: string }[] }) => r.passages.map((p) => p.status);
+
+    it('enregistre les passages avec leur heure réelle et met la présence à jour', async () => {
+      const { a, b, event, lea, marc } = await setup();
+      const sent = [offline(lea.id, 'in', 20), offline(marc.id, 'in', 15), offline(marc.id, 'out', 5)];
+      const r = await b.syncOffline(event.id, { stationId: 'entree', passages: sent, refusals: [] });
+      expect(r.passages).toEqual(sent.map((p) => ({ id: p.id, status: 'counted' })));
+      const snap = (await snapshotOf(a, event.id))!;
+      expect(snap.passages.find((p) => p.id === sent[0]!.id)).toMatchObject({
+        at: sent[0]!.at, origin: 'offline', offlineDuplicate: false, agentName: 'Bruno Agent', stationId: 'entree', typeId: 'magasin',
+      });
+      expect(snap.participants.find((p) => p.id === lea.id)).toMatchObject({ inside: true, entryCount: 1, firstEntryAt: sent[0]!.at });
+      expect(snap.participants.find((p) => p.id === marc.id)).toMatchObject({ inside: false, entryCount: 1 });
+    });
+
+    it('deux postes hors ligne font entrer la même personne : la seconde entrée est un doublon', async () => {
+      const { a, b, event, lea } = await setup();
+      expect(statuses(await a.syncOffline(event.id, { stationId: 'poste-1', passages: [offline(lea.id, 'in', 10)], refusals: [] }))).toEqual(['counted']);
+      expect(statuses(await b.syncOffline(event.id, { stationId: 'poste-2', passages: [offline(lea.id, 'in', 8)], refusals: [] }))).toEqual(['duplicate']);
+      const snap = (await snapshotOf(a, event.id))!;
+      expect(snap.passages.map((p) => [p.stationId, p.offlineDuplicate]).sort()).toEqual([['poste-1', false], ['poste-2', true]]);
+      expect(snap.participants.find((p) => p.id === lea.id)).toMatchObject({ inside: true, entryCount: 1 });
+    });
+
+    it("un lot renvoyé après une coupure n'est pas compté deux fois", async () => {
+      const { a, b, event, lea } = await setup();
+      const batch = { stationId: 'poste-2', passages: [offline(lea.id, 'in', 10), offline(lea.id, 'out', 5)], refusals: [] };
+      const first = await b.syncOffline(event.id, batch);
+      expect(await b.syncOffline(event.id, batch)).toEqual(first);
+      const snap = (await snapshotOf(a, event.id))!;
+      expect(snap.passages).toHaveLength(2);
+      expect(snap.participants.find((p) => p.id === lea.id)).toMatchObject({ inside: false, entryCount: 1 });
+    });
+
+    it("entrée hors ligne antérieure à une entrée en ligne : c'est l'entrée en ligne qui devient le doublon", async () => {
+      const { a, b, event, lea } = await setup();
+      const online = (await a.scan(event.id, lea.token, 'in', 'camera', 'poste-1')).passage!;
+      expect(statuses(await b.syncOffline(event.id, { stationId: 'poste-2', passages: [offline(lea.id, 'in', 3)], refusals: [] }))).toEqual(['counted']);
+      const snap = (await snapshotOf(a, event.id))!;
+      expect(snap.passages.find((p) => p.id === online.id)).toMatchObject({ offlineDuplicate: true });
+      expect(snap.participants.find((p) => p.id === lea.id)).toMatchObject({ inside: true, entryCount: 1 });
+      // Le scan en ligne suivant s'appuie sur la présence réconciliée
+      expect((await a.scan(event.id, lea.token, 'in', 'camera', 'poste-1')).decision).toMatchObject({ result: 'refused', reason: 'already-inside' });
+    });
+
+    it('journalise les refus décidés hors ligne, une seule fois', async () => {
+      const { a, b, event, lea } = await setup();
+      const refusals = [
+        { id: newRecordId(), reason: 'unknown' as const, at: ago(4), method: 'camera' as const, participantId: null, sample: 'https://exem' },
+        { id: newRecordId(), reason: 'already-inside' as const, at: ago(3), method: 'camera' as const, participantId: lea.id, sample: '' },
+      ];
+      await b.syncOffline(event.id, { stationId: 'poste-2', passages: [], refusals });
+      await b.syncOffline(event.id, { stationId: 'poste-2', passages: [], refusals });
+      const snap = (await snapshotOf(a, event.id))!;
+      expect(snap.refusals.map((r) => [r.reason, r.participantId, r.sample, r.stationId]).sort()).toEqual([
+        ['already-inside', lea.id, '', 'poste-2'], ['unknown', null, 'https://exem', 'poste-2'],
+      ]);
+    });
+
+    it('rejette un participant inconnu, une heure trop en avance ou un identifiant invalide, sans bloquer le reste', async () => {
+      const { a, b, event, lea } = await setup();
+      const other = await a.createEvent((await a.getSession())!.memberships[0]!.orgId, { name: 'Autre', startDate: '2027-04-01', endDate: '2027-04-01' });
+      const [stranger] = await a.addParticipants(other.id, [{ firstName: 'Zoé', lastName: 'Ailleurs', email: 'zoe@x.fr', typeId: 'magasin', source: 'manual' }]);
+      const future = { ...offline(lea.id, 'in', 0), at: new Date(Date.now() + 3_600_000).toISOString() };
+      const r = await b.syncOffline(event.id, {
+        stationId: 'poste-2',
+        passages: [offline(stranger!.id, 'in', 5), future, { ...offline(lea.id, 'in', 5), id: 'PAS-VALIDE' }, offline(lea.id, 'in', 2)],
+        refusals: [],
+      });
+      expect(statuses(r)).toEqual(['rejected', 'rejected', 'rejected', 'counted']);
+      expect((await snapshotOf(a, event.id))!.passages).toHaveLength(1);
+    });
+
+    it("réservé aux membres connectés de l'organisation (NF-20, NF-24)", async () => {
+      const { a, b, event, lea, orgId, emails } = await setup();
+      const batch = { stationId: 'x', passages: [offline(lea.id, 'in', 1)], refusals: [] };
+      await a.removeMember(orgId, (await a.listMembers(orgId)).find((m) => m.email === emails.bruno)!.userId);
+      await expect(b.syncOffline(event.id, batch)).rejects.toMatchObject({ code: 'not-found' });
+      await a.signOut();
+      await expect(a.syncOffline(event.id, batch)).rejects.toMatchObject({ code: 'unauthenticated' });
     });
   });
 

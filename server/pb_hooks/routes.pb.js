@@ -18,6 +18,7 @@ routerAdd('POST', '/api/ec/events/{id}/duplicate', (e) => require(`${__hooks}/li
 routerAdd('POST', '/api/ec/events/{id}/participants', (e) => require(`${__hooks}/lib/ec.cjs`).addParticipants(e));
 routerAdd('POST', '/api/ec/events/{id}/scan', (e) => require(`${__hooks}/lib/ec.cjs`).scan(e));
 routerAdd('POST', '/api/ec/events/{id}/close-day', (e) => require(`${__hooks}/lib/ec.cjs`).closeDay(e));
+routerAdd('POST', '/api/ec/events/{id}/sync', (e) => require(`${__hooks}/lib/ec.cjs`).syncOffline(e));
 
 routerAdd('PATCH', '/api/ec/participants/{id}', (e) => require(`${__hooks}/lib/ec.cjs`).updateParticipant(e));
 routerAdd('DELETE', '/api/ec/participants/{id}', (e) => require(`${__hooks}/lib/ec.cjs`).deleteParticipant(e));

@@ -54,10 +54,10 @@ describe('replayParticipant — présence par le dernier passage utile (RG-01)',
     expect([...r.duplicates]).toEqual(['cloture']);
   });
 
-  it('même milliseconde sur deux postes : le premier enregistré compte', () => {
+  it('même milliseconde sur deux postes : départage stable par identifiant', () => {
     const r = replayParticipant([
-      makePassage('p1', 'in', at('09:00'), { id: 'x' }),
       makePassage('p1', 'in', at('09:00'), { id: 'y' }),
+      makePassage('p1', 'in', at('09:00'), { id: 'x' }),
     ]);
     expect([...r.duplicates]).toEqual(['y']);
   });

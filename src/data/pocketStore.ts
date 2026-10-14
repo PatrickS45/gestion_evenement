@@ -13,7 +13,7 @@ import {
   StoreError,
   type AccessPage, type EventPatch, type EventSnapshot, type EventStore, type Member, type NewEvent,
   type NewParticipant, type ParticipantPatch, type RegistrationForm, type RegistrationInfo, type ScanResult,
-  type Session, type SignUpInput,
+  type Session, type SignUpInput, type SyncBatch, type SyncResult,
 } from './store';
 
 const AUTH_KEY = 'event-control:pb-auth';
@@ -206,6 +206,10 @@ export class PocketStore implements EventStore {
 
   async closeDay(eventId: string, stationId: string) {
     return (await this.call<{ count: number }>('POST', `/api/ec/events/${encodeURIComponent(eventId)}/close-day`, { stationId })).count;
+  }
+
+  syncOffline(eventId: string, batch: SyncBatch) {
+    return this.call<SyncResult>('POST', `/api/ec/events/${encodeURIComponent(eventId)}/sync`, batch);
   }
 
   // ── Public ─────────────────────────────────────────────────────────

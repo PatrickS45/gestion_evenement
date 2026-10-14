@@ -5,6 +5,7 @@ import { can, ROLES, type Action, type Role } from '../../src/domain/access';
 import { DEFAULT_TYPES } from '../../src/domain/colors';
 import { DEFAULT_THRESHOLDS } from '../../src/domain/gauge';
 import type { Direction, EventInfo, Participant, ParticipantType, Passage, ScanMethod } from '../../src/domain/model';
+import { parseOfflinePassage, parseOfflineRefusal, reconcile, SYNC_MAX, type SyncResult, type SyncStatus } from '../../src/domain/offline';
 import { applyScan, decideScan } from '../../src/domain/scan';
 import type {
   AccessPage, EventPatch, Member, NewEvent, NewParticipant, ParticipantPatch, RegistrationForm, RegistrationInfo,
@@ -99,8 +100,20 @@ function writeParticipant(r: PbRecord, p: Participant) {
   r.set('lastMoveAt', p.lastMoveAt ?? '');
 }
 
-function writePassage(app: PbApp, p: Omit<Passage, 'id'>): Passage {
+function toPassage(r: PbRecord): Passage {
+  return {
+    id: r.id, eventId: r.getString('event'), participantId: r.getString('participant'), typeId: r.getString('typeId'),
+    direction: r.getString('direction') as Direction, at: r.getString('at'),
+    agentId: r.getString('agentId'), agentName: r.getString('agentName'), stationId: r.getString('stationId'),
+    method: r.getString('method') as ScanMethod, origin: r.getString('origin') as Passage['origin'],
+    offlineDuplicate: r.getBool('offlineDuplicate'),
+  };
+}
+
+/** Nouveau passage ; identifiant fourni par le poste pour un passage hors ligne. */
+function writePassage(app: PbApp, p: Omit<Passage, 'id'> & { id?: string }): Passage {
   const r = new Record(app.findCollectionByNameOrId('passages'));
+  if (p.id) r.set('id', p.id);
   r.set('event', p.eventId);
   r.set('participant', p.participantId);
   for (const k of ['typeId', 'direction', 'at', 'agentId', 'agentName', 'stationId', 'method', 'origin'] as const) r.set(k, p[k]);
@@ -495,6 +508,72 @@ export function closeDay(e: PbRequestEvent) {
     }
   });
   e.json(200, { count });
+}
+
+/**
+ * Passages et refus enregistrés hors ligne (F-61, F-63), dans une seule transaction :
+ * le journal de chaque participant concerné est rejoué à l'heure réelle, ses doublons marqués
+ * et sa présence recalculée. Un lot renvoyé après une coupure n'est pas compté deux fois.
+ */
+export function syncOffline(e: PbRequestEvent) {
+  const eventId = e.request.pathValue('id');
+  const input = body(e);
+  const passagesIn = Array.isArray(input.passages) ? (input.passages as unknown[]) : [];
+  const refusalsIn = Array.isArray(input.refusals) ? (input.refusals as unknown[]) : [];
+  if (passagesIn.length + refusalsIn.length > SYNC_MAX) fail('invalid', 'Lot trop volumineux');
+  const rawId = (raw: unknown) => str((raw as { id?: unknown } | null)?.id);
+  const status = new Map<string, SyncStatus>();
+
+  $app.runInTransaction((app) => {
+    const { user } = requireEvent(app, e, eventId, 'scan');
+    const nowMs = Date.now();
+    const base = { eventId, agentId: user.id, agentName: user.getString('name'), stationId: clip(input.stationId, 60) };
+
+    const byParticipant = new Map<string, { record: PbRecord; received: Passage[] }>();
+    for (const raw of passagesIn) {
+      const p = parseOfflinePassage(raw, nowMs);
+      const record = p && (byParticipant.get(p.participantId)?.record ?? find(app, 'participants', p.participantId));
+      const existing = p && find(app, 'passages', p.id);
+      if (!p || !record || record.getString('event') !== eventId || (existing && existing.getString('participant') !== p.participantId)) {
+        status.set(rawId(raw), 'rejected');
+        continue;
+      }
+      const group = byParticipant.get(p.participantId) ?? { record, received: [] };
+      group.received.push({ ...base, ...p, typeId: record.getString('typeId'), origin: 'offline', offlineDuplicate: false });
+      byParticipant.set(p.participantId, group);
+    }
+
+    for (const [participantId, { record, received }] of byParticipant) {
+      const knownRecords = findBy(app, 'passages', 'participant = {:p}', { p: participantId });
+      const known = knownRecords.map(toPassage);
+      const r = reconcile(toParticipant(record), known, received);
+      for (const c of r.changed) {
+        const kr = knownRecords[known.findIndex((k) => k.id === c.id)]!;
+        kr.set('offlineDuplicate', c.offlineDuplicate);
+        app.save(kr);
+      }
+      for (const p of r.added) writePassage(app, p);
+      writeParticipant(record, r.participant);
+      app.save(record);
+      const flags = new Map<string, boolean>();
+      for (const k of known) flags.set(k.id, k.offlineDuplicate);
+      for (const p of [...r.changed, ...r.added]) flags.set(p.id, p.offlineDuplicate);
+      for (const p of received) status.set(p.id, flags.get(p.id) ? 'duplicate' : 'counted');
+    }
+
+    for (const raw of refusalsIn) {
+      const r = parseOfflineRefusal(raw, nowMs);
+      if (!r || find(app, 'refusals', r.id)) continue;
+      const rec = new Record(app.findCollectionByNameOrId('refusals'));
+      rec.set('id', r.id);
+      rec.set('event', eventId);
+      for (const [k, v] of Object.entries({ ...base, ...r })) if (k !== 'eventId' && k !== 'id') rec.set(k, v ?? '');
+      app.save(rec);
+    }
+  });
+
+  const result: SyncResult = { passages: passagesIn.map((raw) => ({ id: rawId(raw), status: status.get(rawId(raw)) ?? 'rejected' })) };
+  e.json(200, result);
 }
 
 // ─── Public (F-30 à F-42) : sans connexion ───────────────────────────

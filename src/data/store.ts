@@ -5,7 +5,10 @@ import type { Role } from '../domain/access';
 import type {
   Direction, EventInfo, Participant, ParticipantSource, ParticipantType, Passage, Refusal, ScanMethod, User,
 } from '../domain/model';
+import type { SyncBatch, SyncResult } from '../domain/offline';
 import type { ScanDecision } from '../domain/scan';
+
+export type { OfflinePassage, OfflineRefusal, SyncBatch, SyncResult, SyncStatus } from '../domain/offline';
 
 /** Appartenance de l'utilisateur connecté à une organisation (F-02). */
 export interface Membership {
@@ -147,6 +150,12 @@ export interface EventStore {
   scan(eventId: string, token: string, direction: Direction, method: ScanMethod, stationId: string): Promise<ScanResult>;
   /** Enregistre la sortie de tous les présents ; renvoie le nombre de sorties. */
   closeDay(eventId: string, stationId: string): Promise<number>;
+  /**
+   * Envoie les passages et refus enregistrés hors ligne (F-61), au nom de l'utilisateur connecté.
+   * Le journal de chaque participant concerné est rejoué à l'heure réelle : les doublons sont marqués
+   * et la présence recalculée (F-63). Rejouable : un lot déjà reçu n'est pas compté deux fois.
+   */
+  syncOffline(eventId: string, batch: SyncBatch): Promise<SyncResult>;
 
   // Public (F-30 à F-42)
   getRegistrationInfo(eventId: string): Promise<RegistrationInfo | null>;

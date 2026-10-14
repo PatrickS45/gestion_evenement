@@ -10,6 +10,19 @@ export function newId(): string {
   return crypto.randomUUID();
 }
 
+/** Identifiant au format du serveur (15 caractères [a-z0-9]), créé par un poste hors ligne. */
+export function newRecordId(): string {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const max = 256 - (256 % alphabet.length);
+  let id = '';
+  while (id.length < 15) {
+    for (const b of crypto.getRandomValues(new Uint8Array(15))) {
+      if (b < max && id.length < 15) id += alphabet[b % alphabet.length];
+    }
+  }
+  return id;
+}
+
 // Code d'accès agents (F-04) : lisible et facile à dicter, sans 0/O ni 1/I/L
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
