@@ -16,7 +16,7 @@ import type {
 // Le client convertit le code métier en StoreError.
 
 const STATUS: Record<StoreError['code'], number> = {
-  invalid: 400, unauthenticated: 401, forbidden: 403, closed: 403, 'not-found': 404, duplicate: 409,
+  invalid: 400, unauthenticated: 401, forbidden: 403, closed: 403, 'not-found': 404, duplicate: 409, unreachable: 503,
 };
 
 function fail(code: StoreError['code'], message: string): never {

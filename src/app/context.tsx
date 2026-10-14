@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { StationStore, type StationStatus } from '../data/stationStore';
 import type { EventSnapshot, EventStore, Membership, Session } from '../data/store';
 
 // ─── Accès aux données ───────────────────────────────────────────────
@@ -13,6 +14,20 @@ export function useStore(): EventStore {
   const store = useContext(StoreContext);
   if (!store) throw new Error('StoreProvider manquant');
   return store;
+}
+
+/** Poste résistant aux coupures (F-60 à F-64) : présent seulement avec le serveur. */
+export function useStation(): StationStore | null {
+  const store = useStore();
+  return store instanceof StationStore ? store : null;
+}
+
+/** État du poste (en ligne, passages en attente…), tenu à jour ; null sans serveur. */
+export function useStationStatus(): StationStatus | null {
+  const station = useStation();
+  const [status, setStatus] = useState<StationStatus | null>(() => station?.getStatus() ?? null);
+  useEffect(() => station?.onStatus(setStatus), [station]);
+  return status;
 }
 
 /** Données d'un événement, tenues à jour en temps réel ; undefined pendant le chargement, null s'il n'existe pas. */

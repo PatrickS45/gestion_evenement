@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { errorMessage, useNotify, useSession, useStore } from '../app/context';
+import { errorMessage, useNotify, useSession, useStationStatus, useStore } from '../app/context';
 import type { EventSnapshot, ScanResult } from '../data/store';
 import { fullName, type Direction, type ScanMethod } from '../domain/model';
 import { decisionMessage } from '../domain/scan';
@@ -26,6 +26,7 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
   const notify = useNotify();
   const { stationId } = useSession();
+  const offline = useStationStatus()?.online === false;
   const { event, participants } = snapshot;
   const [mode, setModeState] = useState<Direction>(readMode);
   const [camera, setCamera] = useState(false);
@@ -104,10 +105,16 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
           </button>
         ))}
       </div>
-      <p className="muted">Ce poste enregistre les <strong>{mode === 'in' ? 'entrées' : 'sorties'}</strong>. Chaque passage apparaît aussitôt sur les autres postes.</p>
+      <p className="muted">
+        Ce poste enregistre les <strong>{mode === 'in' ? 'entrées' : 'sorties'}</strong>.{' '}
+        {offline ? 'Les passages seront transmis aux autres postes au retour du réseau.' : 'Chaque passage apparaît aussitôt sur les autres postes.'}
+      </p>
 
       <div className="card" style={{ padding: 14 }}>
-        <p style={{ marginBottom: 6 }}>Dans la salle : <strong>{present}</strong> / {event.capacity}</p>
+        <p style={{ marginBottom: 6 }}>
+          Dans la salle : <strong>{present}</strong> / {event.capacity}
+          {offline && <span className="small"> — estimation hors ligne : seuls les passages de ce poste sont à jour</span>}
+        </p>
         <GaugeBar present={present} capacity={event.capacity} level={level} height={10} showLabel={level !== 'normal'} />
       </div>
 

@@ -39,6 +39,22 @@ Puis copier `.env.example` en `.env.local` et relancer `npm run dev`. Les requê
 par Vite vers PocketBase : un téléphone du réseau local n'a besoin que de l'adresse du poste de
 développement (`npm run dev -- --host`). L'administration de PocketBase est sur http://127.0.0.1:8090/_/.
 
+### Mode hors ligne (F-60 à F-64)
+
+Avec le serveur, chaque poste garde une copie de secours chiffrée de l'événement qu'il affiche. Il la met à jour en
+continu ; le bouton « Préparer le hors ligne » la force avant l'ouverture. Si le serveur ne répond plus, ou s'il met
+plus de 2 s à répondre, le scan est validé sur le poste à partir de cette copie. Le passage est mis en file d'attente,
+chiffrée elle aussi, puis envoyé dans l'ordre au retour du réseau. Le serveur rejoue alors le journal de chaque
+participant à l'heure réelle et marque les doublons.
+
+Un bandeau indique en permanence l'état du poste et le nombre de passages en attente. Hors ligne, la présence affichée
+n'est qu'une estimation. La déconnexion est refusée tant que des passages attendent ; une fois acceptée, elle efface
+la copie, la file et la clé de chiffrement. La copie d'un événement terminé est effacée au démarrage suivant.
+
+En version de production (`npm run build`), un service worker permet d'ouvrir l'application sans réseau, à condition
+qu'elle ait été ouverte une fois en ligne. En mode serveur, utilisez un seul onglet de scan par appareil : la file
+d'attente est propre à l'appareil.
+
 ### Test de charge (NF-05)
 
 ```

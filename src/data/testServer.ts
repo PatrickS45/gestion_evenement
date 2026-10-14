@@ -16,6 +16,9 @@ export const serverInstalled = existsSync(binary);
 export interface TestServer {
   url: string;
   stop(): void;
+  /** Coupure : arrête le serveur sans effacer ses données ; `resume` le relance au même endroit. */
+  cut(): void;
+  resume(): Promise<void>;
 }
 
 /** @param rateLimits garder la limitation des requêtes de production (sinon désactivée) */
@@ -29,18 +32,28 @@ export async function startTestServer({ rateLimits = false } = {}): Promise<Test
   execFileSync(binary, ['superuser', 'upsert', 'admin@test.local', 'superuser-de-test', ...dirs]);
   const port = 18000 + Math.floor(Math.random() * 1000);
   const url = `http://127.0.0.1:${port}`;
-  const server = spawn(binary, ['serve', `--http=127.0.0.1:${port}`, ...dirs], { stdio: 'ignore' });
+  const launch = () => spawn(binary, ['serve', `--http=127.0.0.1:${port}`, ...dirs], { stdio: 'ignore' });
+  let server = launch();
   const stop = () => {
     server.kill();
     rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   };
-
-  try {
+  const started = async () => {
     for (let i = 0; ; i++) {
-      try { if ((await fetch(`${url}/api/health`)).ok) break; } catch { /* pas encore démarré */ }
+      try { if ((await fetch(`${url}/api/health`)).ok) return; } catch { /* pas encore démarré */ }
       if (i > 100) throw new Error('PocketBase ne démarre pas');
       await new Promise((r) => setTimeout(r, 100));
     }
+  };
+  const cut = () => { server.kill(); };
+  const resume = async () => {
+    await new Promise((r) => setTimeout(r, 300)); // libération du port
+    server = launch();
+    await started();
+  };
+
+  try {
+    await started();
     if (!rateLimits) {
       // Les tests créent de nombreux comptes depuis la même adresse
       const admin = new PocketStore(url).pb;
@@ -51,5 +64,5 @@ export async function startTestServer({ rateLimits = false } = {}): Promise<Test
     stop();
     throw err;
   }
-  return { url, stop };
+  return { url, stop, cut, resume };
 }

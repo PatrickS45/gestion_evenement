@@ -109,7 +109,8 @@ export interface RegistrationForm {
 
 export class StoreError extends Error {
   constructor(
-    public code: 'not-found' | 'closed' | 'duplicate' | 'invalid' | 'unauthenticated' | 'forbidden',
+    /** `unreachable` : serveur injoignable ou indisponible ; le poste bascule hors ligne (F-61). */
+    public code: 'not-found' | 'closed' | 'duplicate' | 'invalid' | 'unauthenticated' | 'forbidden' | 'unreachable',
     message: string,
   ) {
     super(message);

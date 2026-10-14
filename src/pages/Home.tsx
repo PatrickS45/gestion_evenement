@@ -79,10 +79,11 @@ export function SignIn() {
 /** Utilisateur, rôle, poste et déconnexion, dans la barre du haut. */
 export function UserMeta({ role }: { role?: keyof typeof ROLE_LABELS }) {
   const { session, stationId, signOut } = useSession();
+  const notify = useNotify();
   return (
     <span className="topbar-meta">
       {session?.user.name}{role && <> ({ROLE_LABELS[role].toLowerCase()})</>} · {stationId} ·{' '}
-      <button className="btn btn-ghost btn-small" style={{ color: '#fff' }} onClick={() => { void signOut().then(() => navigate()); }}>Se déconnecter</button>
+      <button className="btn btn-ghost btn-small" style={{ color: '#fff' }} onClick={() => { signOut().then(() => navigate(), (err) => notify(errorMessage(err), 'danger')); }}>Se déconnecter</button>
     </span>
   );
 }

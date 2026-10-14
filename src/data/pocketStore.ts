@@ -52,7 +52,10 @@ const BY_STATUS: Record<number, StoreError['code']> = { 400: 'invalid', 401: 'un
 /** Erreur du serveur convertie en StoreError ; le code métier est la clé de `data` (voir server/src). */
 function toStoreError(err: unknown): unknown {
   if (!(err instanceof ClientResponseError)) return err;
-  if (err.status === 0) return new StoreError('invalid', 'Serveur injoignable : vérifiez la connexion');
+  // Réseau coupé, délai dépassé, ou serveur indisponible derrière son relais
+  if (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504) {
+    return new StoreError('unreachable', 'Serveur injoignable : vérifiez la connexion');
+  }
   if (err.status === 429) return new StoreError('forbidden', 'Trop de tentatives, réessayez dans une minute');
   const data = (err.response?.data ?? {}) as Record<string, unknown>;
   const code = CODES.find((c) => c in data) ?? BY_STATUS[err.status] ?? 'invalid';
@@ -76,9 +79,15 @@ export class PocketStore implements EventStore {
     this.pb.autoCancellation(false);
   }
 
-  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    try { return await this.pb.send<T>(path, { method, body }); }
+  private async call<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+    try { return await this.pb.send<T>(path, { method, body, ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}) }); }
     catch (err) { throw toStoreError(err); }
+  }
+
+  /** Le serveur répond-il ? Sert au poste hors ligne pour détecter le retour du réseau. */
+  async reachable(timeoutMs = 3000): Promise<boolean> {
+    try { await this.pb.health.check({ signal: AbortSignal.timeout(timeoutMs) }); return true; }
+    catch { return false; }
   }
 
   private async read<T>(fn: () => Promise<T>): Promise<T> {
@@ -200,8 +209,9 @@ export class PocketStore implements EventStore {
 
   // ── Scan ───────────────────────────────────────────────────────────
 
+  /** Sans réponse en 2 secondes, le scan échoue en `unreachable` : le poste le valide alors hors ligne. */
   scan(eventId: string, token: string, direction: Direction, method: ScanMethod, stationId: string) {
-    return this.call<ScanResult>('POST', `/api/ec/events/${encodeURIComponent(eventId)}/scan`, { token, direction, method, stationId });
+    return this.call<ScanResult>('POST', `/api/ec/events/${encodeURIComponent(eventId)}/scan`, { token, direction, method, stationId }, 2000);
   }
 
   async closeDay(eventId: string, stationId: string) {
@@ -209,7 +219,7 @@ export class PocketStore implements EventStore {
   }
 
   syncOffline(eventId: string, batch: SyncBatch) {
-    return this.call<SyncResult>('POST', `/api/ec/events/${encodeURIComponent(eventId)}/sync`, batch);
+    return this.call<SyncResult>('POST', `/api/ec/events/${encodeURIComponent(eventId)}/sync`, batch, 15_000);
   }
 
   // ── Public ─────────────────────────────────────────────────────────
@@ -259,22 +269,37 @@ export class PocketStore implements EventStore {
     };
 
     const filter = this.pb.filter('event = {:event}', { event: eventId });
+    // Enregistrements reçus en direct pendant un chargement : plus récents que ceux chargés
+    const touched = new Set<string>();
     const follow = <T extends { id: string }>(collection: string, map: Map<string, T>, convert: (r: RecordModel) => T) =>
       this.pb.collection(collection).subscribe('*', (e) => {
+        touched.add(e.record.id);
         if (e.action === 'delete') map.delete(e.record.id); else map.set(e.record.id, convert(e.record));
         emit();
       }, { filter });
 
     // Abonnements d'abord, chargement ensuite : aucun changement ne peut passer entre les deux
     const subscriptions = [
-      this.pb.collection('events').subscribe(eventId, (e) => { event = e.action === 'delete' ? null : toEvent(e.record); emit(); }),
+      this.pb.collection('events').subscribe(eventId, (e) => { touched.add(eventId); event = e.action === 'delete' ? null : toEvent(e.record); emit(); }),
       follow('participants', participants, toParticipant),
       follow('passages', passages, toPassage),
       follow('refusals', refusals, toRefusal),
     ];
     for (const s of subscriptions) s.catch(() => undefined); // l'échec est traité par load()
 
-    const load = async () => {
+    // Après une coupure, le temps réel se reconnecte mais les changements intervenus entre-temps
+    // sont perdus : tout est rechargé à chaque reconnexion, ou dès la première si le chargement a échoué
+    let connections = 0;
+    let failed = false;
+    const reconnected = this.pb.realtime.subscribe('PB_CONNECT', () => {
+      if ((++connections > 1 || failed) && ready && !closed) {
+        load(true).then(() => { failed = false; emit(); }, () => undefined);
+      }
+    });
+    reconnected.catch(() => undefined);
+
+    const load = async (reload = false) => {
+      touched.clear();
       await Promise.all(subscriptions);
       const list = { filter, batch: 1000 };
       const [ev, parts, pass, refs, session] = await Promise.all([
@@ -284,20 +309,24 @@ export class PocketStore implements EventStore {
         this.pb.collection('refusals').getFullList(list),
         this.getSession(), // appartenances à jour : un rôle a pu changer depuis la connexion
       ]);
-      // Un enregistrement déjà reçu en direct est plus récent que celui chargé
-      event ??= toEvent(ev);
-      for (const r of parts) if (!participants.has(r.id)) participants.set(r.id, toParticipant(r));
-      for (const r of pass) if (!passages.has(r.id)) passages.set(r.id, toPassage(r));
-      for (const r of refs) if (!refusals.has(r.id)) refusals.set(r.id, toRefusal(r));
+      if (!touched.has(eventId)) event = toEvent(ev);
+      const merge = <T>(map: Map<string, T>, records: RecordModel[], convert: (r: RecordModel) => T) => {
+        const loaded = new Set(records.map((r) => r.id));
+        if (reload) for (const id of [...map.keys()]) if (!loaded.has(id) && !touched.has(id)) map.delete(id);
+        for (const r of records) if (!touched.has(r.id)) map.set(r.id, convert(r));
+      };
+      merge(participants, parts, toParticipant);
+      merge(passages, pass, toPassage);
+      merge(refusals, refs, toRefusal);
       role = session?.memberships.find((m) => m.orgId === event!.orgId)?.role ?? null;
     };
 
-    load().catch(() => { event = null; }).finally(() => { ready = true; emit(); });
+    load().catch(() => { event = null; failed = true; }).finally(() => { ready = true; emit(); });
 
     return () => {
       closed = true;
       clearTimeout(pending);
-      for (const s of subscriptions) s.then((unsubscribe) => unsubscribe()).catch(() => undefined);
+      for (const s of [...subscriptions, reconnected]) s.then((unsubscribe) => unsubscribe()).catch(() => undefined);
     };
   }
 }

@@ -8,6 +8,7 @@ import { Scan } from './Scan';
 import { Live } from './Live';
 import { Settings } from './Settings';
 import { Exports } from './Exports';
+import { StationBar } from '../ui/StationBar';
 
 /** Sections et droit requis pour les voir : l'agent d'accueil n'a accès qu'au direct et au scan. */
 const SECTIONS: readonly { id: string; label: string; requires: Action }[] = [
@@ -55,6 +56,7 @@ export function EventShell({ eventId, section }: { eventId: string; section: str
           ))}
         </div>
       </nav>
+      <StationBar eventId={eventId} />
       <main className="page">
         <h1 className="sr-only">{current.label} – {event.name}</h1>
         {current.id === 'direct' && <Live snapshot={snapshot} />}
