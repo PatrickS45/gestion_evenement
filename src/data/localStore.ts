@@ -692,7 +692,7 @@ export class LocalStore implements EventStore {
     const eventId = await this.transaction([], (db) => {
       const user = this.requireUser(db);
       const event = normalized && Object.values(db.events).find((e) => e.accessCode === normalized && !e.purgedAt);
-      if (!event) { this.failures.push(t); throw new StoreError('not-found', 'Code d\'accès inconnu ou désactivé'); }
+      if (!event) { this.failures.push(t); throw new StoreError('not-found', 'Code d\'accès inconnu ou désactivé. Version de démonstration : les données restent dans le navigateur où l\'événement a été créé, le code ne fonctionne que dans ce même navigateur.'); }
       if (!this.eventRole(db, user.id, event)) db.eventAgents.push({ eventId: event.id, userId: user.id });
       return event.id;
     });
