@@ -1,4 +1,5 @@
 import { StrictMode } from 'react';
+import '@fontsource-variable/instrument-sans';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { StoreProvider } from './app/context';

@@ -3,7 +3,7 @@ import { errorMessage, useNotify, useSession, useStore } from '../app/context';
 import { href } from '../app/router';
 import type { Member } from '../data/store';
 import { can, ROLE_LABELS, ROLES, type Role } from '../domain/access';
-import { UserMeta } from './Home';
+import { AppHeader } from '../ui/AppHeader';
 
 /** Membres de l'organisation et leur rôle (propriétaire uniquement). Invitation par email : lot 2 (F-03). */
 export function Members() {
@@ -49,18 +49,12 @@ export function Members() {
 
   return (
     <>
-      <header className="topbar on-dark">
-        <div className="topbar-inner">
-          <div>
-            <a className="brand" href={href()}>Event Control</a>
-            <span aria-hidden="true"> › </span>
-            <span style={{ fontWeight: 700 }}>Membres</span>
-          </div>
-          <UserMeta role={org?.role} />
-        </div>
-      </header>
+      <AppHeader title={org?.orgName} role={org?.role} />
       <main className="page stack">
-        <h1 style={{ fontSize: 24 }}>Membres{org && <> – {org.orgName}</>}</h1>
+        <div className="stack" style={{ gap: 2 }}>
+          <p className="page-sub"><a href={href()}>Événements</a> <span aria-hidden="true">›</span></p>
+          <h1 className="page-title">Membres</h1>
+        </div>
         {!allowed ? <p className="notice notice-info">Seul le propriétaire de l'organisation gère ses membres.</p> : <>
           {members === null ? <p role="status">Chargement…</p> : (
             <div className="card table-wrap">

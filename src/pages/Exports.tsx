@@ -49,6 +49,12 @@ export function Exports({ snapshot }: { snapshot: EventSnapshot }) {
 
   return (
     <div className="stack">
+      <div className="page-head no-print">
+        <div className="stack" style={{ gap: 2 }}>
+          <h2 className="page-title">Statistiques et exports</h2>
+          <p className="page-sub">Bilan à jour en continu, exports Excel, CSV et PDF</p>
+        </div>
+      </div>
       <section className="card stack no-print" aria-labelledby="exports-title">
         <h2 id="exports-title" style={{ marginBottom: 0 }}>Exports</h2>
         {event.purgedAt

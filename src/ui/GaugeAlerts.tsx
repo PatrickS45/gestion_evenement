@@ -32,7 +32,6 @@ export function GaugeAlerts({ event, present }: { event: EventInfo; present: num
   // Le niveau atteint à l'ouverture de l'écran n'est pas signalé : seulement les franchissements suivants
   const alerted = useRef<GaugeLevel | null>(null);
   const [shown, setShown] = useState<{ level: GaugeLevel; text: string } | null>(null);
-  const [permission, setPermission] = useState(() => (notificationsSupported() ? Notification.permission : 'denied'));
 
   useEffect(() => {
     if (alerted.current === null) { alerted.current = level; return; }
@@ -49,24 +48,15 @@ export function GaugeAlerts({ event, present }: { event: EventInfo; present: num
     }
   }, [level, present, event]);
 
-  const ask = async () => {
-    try { setPermission(await Notification.requestPermission()); } catch { /* sans effet */ }
-  };
-
-  if (!shown && permission !== 'default') return null;
+  // L'autorisation des notifications se donne depuis le menu de l'utilisateur
+  if (!shown) return null;
   return (
-    <div className="no-print" style={{ maxWidth: 1100, margin: '12px auto 0', padding: '0 16px' }}>
+    <div className="no-print" style={{ maxWidth: 1240, margin: '12px auto 0', padding: '0 20px' }}>
       {shown && (
         <div role="alert" className={`notice ${shown.level === 'attention' ? 'notice-warn' : 'notice-danger'} row-between`} style={{ gap: 12 }}>
           <span><span aria-hidden="true">{GAUGE_LEVELS[shown.level].icon} </span>{shown.text}</span>
           <button className="btn btn-secondary btn-small" onClick={() => setShown(null)}>J'ai vu</button>
         </div>
-      )}
-      {!shown && permission === 'default' && (
-        <p className="small row-between" style={{ gap: 8 }}>
-          <span>Être prévenu des seuils de jauge même quand l'application est en arrière-plan :</span>
-          <button className="btn btn-ghost btn-small" onClick={() => void ask()}>Activer les notifications</button>
-        </p>
       )}
     </div>
   );

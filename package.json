@@ -16,8 +16,10 @@
     "build:hooks": "node scripts/build-hooks.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/instrument-sans": "^5.3.0",
     "barcode-detector": "^3.2.2",
     "fflate": "^0.8.3",
+    "lucide-react": "^1.58.0",
     "pocketbase": "^0.28.1",
     "qrcode": "^1.5.4",
     "react": "^19.3.0",

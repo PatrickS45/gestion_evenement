@@ -57,6 +57,6 @@ export function CameraScanner({ onCode, paused = false }: { onCode: (code: strin
   if (error) return <p role="alert" className="notice notice-danger">{error}</p>;
   return (
     <video ref={videoRef} muted playsInline aria-label="Image de la caméra"
-      style={{ width: '100%', maxHeight: 360, objectFit: 'cover', borderRadius: 12, background: '#000', display: 'block' }} />
+      style={{ width: '100%', height: '100%', objectFit: 'cover', background: '#000', display: 'block' }} />
   );
 }
