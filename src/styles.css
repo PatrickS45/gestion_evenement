@@ -3,6 +3,7 @@
    bordure de champ 3,3:1 (élément d'interface). */
 :root {
   --ink: #16181d;
+  --brand: #16181d;
   --ink-2: #4a4f5a;
   --ink-3: #5e6370;
   --line: #e4e4e0;
@@ -377,4 +378,21 @@ dialog.sheet { margin: auto auto 0; width: 100%; max-width: 560px; border-radius
   .demo-banner summary { padding: 6px 14px; }
   .demo-banner summary::after { content: none; }
   .demo-banner p { padding: 0 14px 10px; }
+}
+
+/* ─── Visite guidée ────────────────────────────────────────────────── */
+.tour { position: fixed; inset: 0; z-index: 90; }
+.tour-backdrop { position: absolute; inset: 0; }
+.tour-dim { position: absolute; inset: 0; background: rgb(15 18 25 / 55%); }
+.tour-spot { position: fixed; border-radius: 16px; box-shadow: 0 0 0 9999px rgb(15 18 25 / 55%), 0 0 0 3px #fff inset; pointer-events: none; transition: left .3s ease, top .3s ease, width .3s ease, height .3s ease; }
+.tour-card { position: fixed; z-index: 91; width: min(380px, calc(100vw - 32px)); background: #fff; border-radius: 18px; padding: 18px 20px; box-shadow: var(--shadow-lift); display: flex; flex-direction: column; gap: 10px; }
+.tour-card:focus { outline: none; }
+.tour-card:focus-visible { outline: 3px solid var(--accent); }
+.tour-card-center { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(440px, calc(100vw - 32px)); }
+.tour-title { font-size: 19px; font-weight: 700; }
+.tour-body { font-size: 15px; color: var(--ink-2); line-height: 1.55; }
+.tour-progress { height: 4px; background: var(--line-soft); border-radius: 999px; overflow: hidden; }
+.tour-progress span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+@media (max-width: 760px) {
+  .tour-card, .tour-card-center { left: 12px; right: 12px; bottom: 12px; top: auto; transform: none; width: auto; }
 }

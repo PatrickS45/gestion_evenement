@@ -1,12 +1,13 @@
 // Barre d'application : logo, sections (en haut sur ordinateur, en bas sur téléphone),
 // état du poste et menu de l'utilisateur.
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Bell, Check, Info, LogOut, RefreshCw, ScanLine, ShieldCheck, Users, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
+import { Bell, Check, Compass, Info, LogOut, RefreshCw, ScanLine, ShieldCheck, Users, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
 import { errorMessage, useNotify, useSession, useStation, useStationStatus, useStore } from '../app/context';
 import { href, navigate } from '../app/router';
 import { can, ROLE_LABELS, type Role } from '../domain/access';
 import { parisTime } from '../domain/time';
 import { useDismiss } from './Menu';
+import { useTour } from './Tour';
 
 export interface NavItem {
   id: string;
@@ -27,6 +28,7 @@ function UserMenu({ role }: { role?: Role | undefined }) {
   const { session, org, stationId, signOut } = useSession();
   const notify = useNotify();
   const ref = useRef<HTMLDetailsElement>(null);
+  const tour = useTour();
   const [permission, setPermission] = useState(() => (notificationsSupported() ? Notification.permission : 'denied'));
   useDismiss(ref);
   if (!session) return null;
@@ -50,6 +52,11 @@ function UserMenu({ role }: { role?: Role | undefined }) {
         )}
         {permission === 'granted' && (
           <span className="menu-item" style={{ cursor: 'default' }}><Check size={18} aria-hidden="true" />Alertes de jauge activées</span>
+        )}
+        {tour.available && (
+          <button type="button" className="menu-item" onClick={() => { if (ref.current) ref.current.open = false; void tour.start(); }}>
+            <Compass size={18} aria-hidden="true" />Visite guidée
+          </button>
         )}
         {can(org?.role, 'members.manage') && <a className="menu-item" href={href('membres')}><Users size={18} aria-hidden="true" />Membres de l'organisation</a>}
         {can(org?.role, 'stats.export') && <a className="menu-item" href={href('donnees')}><ShieldCheck size={18} aria-hidden="true" />Données personnelles</a>}
