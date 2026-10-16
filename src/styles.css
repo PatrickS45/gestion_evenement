@@ -365,3 +365,16 @@ dialog.sheet { margin: auto auto 0; width: 100%; max-width: 560px; border-radius
   .section-nav a { white-space: nowrap; background: var(--surface); border: 1px solid var(--line); }
   .settings-content h2[id] { scroll-margin-top: 120px; }
 }
+
+/* ─── Bandeau de la version de démonstration ───────────────────────── */
+.demo-banner { background: var(--accent-soft); color: var(--accent); border-bottom: 1px solid #d5daf5; font-size: 13px; }
+.demo-banner summary { max-width: 1240px; margin: 0 auto; padding: 7px 20px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-weight: 600; list-style: none; }
+.demo-banner summary::-webkit-details-marker { display: none; }
+.demo-banner summary::after { content: "En savoir plus"; margin-left: auto; text-decoration: underline; font-weight: 500; }
+.demo-banner[open] summary::after { content: "Masquer"; }
+.demo-banner p { max-width: 1240px; margin: 0 auto; padding: 0 20px 10px 44px; color: var(--ink-2); line-height: 1.5; }
+@media (max-width: 760px) {
+  .demo-banner summary { padding: 6px 14px; }
+  .demo-banner summary::after { content: none; }
+  .demo-banner p { padding: 0 14px 10px; }
+}

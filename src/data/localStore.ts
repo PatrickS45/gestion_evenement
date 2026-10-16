@@ -423,6 +423,9 @@ export class LocalStore implements EventStore {
         fields: [], branding: NO_BRANDING,
       };
       const demo = buildDemo(id, now);
+      // QR codes identiques d'un appareil à l'autre : une seule démonstration par navigateur
+      const existing = Object.values(db.participants).find((p) => p.token === demo.participants[0]!.token);
+      if (existing && db.events[existing.eventId]) return db.events[existing.eventId]!;
       db.events[id] = event;
       for (const p of demo.participants) db.participants[p.id] = p;
       db.passages.push(...demo.passages);
