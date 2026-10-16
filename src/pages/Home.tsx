@@ -9,7 +9,7 @@ import { purgeDay, retentionState } from '../domain/privacy';
 import { parisDay } from '../domain/time';
 import { longDay } from '../ui/privacy';
 import { Modal } from '../ui/components';
-import { Calendar, ChevronRight, MapPin, Plus, Users } from 'lucide-react';
+import { Calendar, ChevronRight, MapPin, Plus, Sparkles, Users } from 'lucide-react';
 
 const dayLabel = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -144,6 +144,16 @@ export function Events() {
     } catch (err) { setError(errorMessage(err)); }
   };
 
+  // Version de démonstration seulement : salon fictif complet, pour montrer Direct et les statistiques
+  const loadDemo = async () => {
+    if (!org || !store.seedDemo) return;
+    try {
+      const event = await store.seedDemo(org.orgId);
+      notify("Démonstration chargée : 1 100 inscrits, hier et aujourd'hui");
+      navigate('e', event.id, 'direct');
+    } catch (err) { notify(errorMessage(err), 'danger'); }
+  };
+
   const createOrg = async (e: FormEvent) => {
     e.preventDefault();
     try {
@@ -192,6 +202,9 @@ export function Events() {
                   {memberships.map((m) => <option key={m.orgId} value={m.orgId}>{m.orgName} ({ROLE_LABELS[m.role].toLowerCase()})</option>)}
                 </select>
               </div>
+            )}
+            {can(org?.role, 'event.create') && store.seedDemo && (
+              <button className="btn btn-secondary" onClick={() => void loadDemo()}><Sparkles size={18} aria-hidden="true" />Charger une démonstration</button>
             )}
             {can(org?.role, 'event.create') && (
               <button className="btn" onClick={() => setCreating(true)}><Plus size={18} aria-hidden="true" />Nouvel événement</button>

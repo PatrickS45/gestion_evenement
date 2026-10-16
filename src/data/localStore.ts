@@ -15,6 +15,7 @@ import {
 import { anonymousReport, type EventReport, type ReportReason } from '../domain/report';
 import { parisDay } from '../domain/time';
 import { DEFAULT_TYPES } from '../domain/colors';
+import { buildDemo, DEMO_CAPACITY } from '../domain/demo';
 import { DEFAULT_THRESHOLDS } from '../domain/gauge';
 import { newAccessCode, newId, newToken } from '../domain/ids';
 import { hashPassword, PASSWORD_MIN_LENGTH, verifyPassword } from './password';
@@ -403,6 +404,30 @@ export class LocalStore implements EventStore {
         privacy: this.orgPrivacyOf(db, orgId), purgedAt: null, accessCode: null, requireApproval: false, fields: [], branding: NO_BRANDING,
       };
       db.events[event.id] = event;
+      return event;
+    });
+  }
+
+  async seedDemo(orgId: string) {
+    const now = this.now().getTime();
+    return this.transaction([], (db) => {
+      this.requireRole(db, orgId, 'event.create');
+      const id = newId();
+      const privacy = { ...this.orgPrivacyOf(db, orgId) };
+      privacy.controller ||= db.organizations[orgId]?.name ?? 'Organisateur';
+      privacy.contact ||= 'contact@demo.example';
+      const event: EventInfo = {
+        id, orgId, name: 'Salon Pro — démonstration', startDate: parisDay(now - 86_400_000), endDate: parisDay(now),
+        venue: 'Parc des expositions', capacity: DEMO_CAPACITY, thresholds: DEFAULT_THRESHOLDS, types: DEFAULT_TYPES,
+        registrationOpen: true, createdAt: this.nowIso(), privacy, purgedAt: null, accessCode: null, requireApproval: false,
+        fields: [], branding: NO_BRANDING,
+      };
+      const demo = buildDemo(id, now);
+      db.events[id] = event;
+      for (const p of demo.participants) db.participants[p.id] = p;
+      db.passages.push(...demo.passages);
+      db.refusals.push(...demo.refusals);
+      this.audit(db, event, 'import', demo.participants.length);
       return event;
     });
   }
