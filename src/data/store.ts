@@ -184,6 +184,8 @@ export interface EventStore {
   // Événements (F-10 à F-16)
   listEvents(orgId: string): Promise<EventInfo[]>;
   createEvent(orgId: string, input: NewEvent): Promise<EventInfo>;
+  /** Démonstration (version locale seulement) : salon fictif de 1 100 inscrits sur deux jours. */
+  seedDemo?(orgId: string): Promise<EventInfo>;
   updateEvent(id: string, patch: EventPatch): Promise<EventInfo>;
   duplicateEvent(id: string, name: string): Promise<EventInfo>;
   deleteEvent(id: string): Promise<void>;
