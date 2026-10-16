@@ -350,3 +350,18 @@ dialog.sheet { margin: auto auto 0; width: 100%; max-width: 560px; border-radius
 .event-card-meta > span { display: inline-flex; align-items: center; gap: 8px; }
 .event-card-arrow { color: var(--ink-3); }
 .event-card .pill { align-self: flex-start; }
+
+/* ─── Pages à sections (paramètres) ────────────────────────────────── */
+.settings { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 28px; align-items: start; }
+.section-nav { position: sticky; top: 88px; display: flex; flex-direction: column; gap: 2px; }
+.section-nav a { padding: 8px 12px; border-radius: var(--radius-sm); color: var(--ink-2); text-decoration: none; font-size: 14px; font-weight: 500; }
+.section-nav a:hover { background: var(--line-soft); color: var(--ink); }
+.section-nav a[aria-current="true"] { background: var(--muted-fill); color: var(--ink); font-weight: 600; }
+.settings-content h2[id] { scroll-margin-top: 90px; }
+.card-danger { border-color: #ecc8c9; }
+@media (max-width: 900px) {
+  .settings { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .section-nav { top: 56px; z-index: 5; flex-direction: row; overflow-x: auto; background: var(--page); padding: 8px 0; margin: 0 -14px; padding-inline: 14px; scrollbar-width: none; }
+  .section-nav a { white-space: nowrap; background: var(--surface); border: 1px solid var(--line); }
+  .settings-content h2[id] { scroll-margin-top: 120px; }
+}

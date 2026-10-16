@@ -8,6 +8,7 @@ import { GAUGE_LEVELS } from '../domain/gauge';
 import { fullName } from '../domain/model';
 import { parisShortDate, parisTime, QUARTER_MS } from '../domain/time';
 import { ColumnChart, GaugeBar, TypeBadge } from '../ui/components';
+import { InPageLink } from '../ui/SectionNav';
 
 const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`;
 const fr = (n: number) => n.toLocaleString('fr-FR');
@@ -73,7 +74,7 @@ export function Live({ snapshot }: { snapshot: EventSnapshot }) {
         <p className="notice notice-info" role="status">
           {plural(live.duplicates.length, 'doublon hors ligne')} : la même personne a été enregistrée sur deux postes coupés du réseau.
           Le comptage est corrigé ; ces passages restent dans le journal, marqués « doublon ».
-          {!fullscreen && <> <a href="#duplicates-title">Voir le détail</a></>}
+          {!fullscreen && <> <InPageLink to="duplicates-title">Voir le détail</InPageLink></>}
         </p>
       )}
 
