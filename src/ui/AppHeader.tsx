@@ -6,6 +6,7 @@ import { errorMessage, useNotify, useSession, useStation, useStationStatus } fro
 import { href, navigate } from '../app/router';
 import { can, ROLE_LABELS, type Role } from '../domain/access';
 import { parisTime } from '../domain/time';
+import { useDismiss } from './Menu';
 
 export interface NavItem {
   id: string;
@@ -15,23 +16,6 @@ export interface NavItem {
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : one}`;
-
-/** Ferme un menu <details> au clic à l'extérieur ou à la touche Échap. */
-function useDismiss(ref: React.RefObject<HTMLDetailsElement | null>) {
-  useEffect(() => {
-    const close = (e: Event) => {
-      const el = ref.current;
-      if (!el?.open) return;
-      if (e instanceof KeyboardEvent ? e.key === 'Escape' : !el.contains(e.target as Node)) {
-        el.open = false;
-        if (e instanceof KeyboardEvent) el.querySelector('summary')?.focus();
-      }
-    };
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('keydown', close);
-    return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); };
-  }, [ref]);
-}
 
 function initials(name: string): string {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') || '?';

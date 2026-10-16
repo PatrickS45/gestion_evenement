@@ -8,6 +8,8 @@ import type { EventInfo } from '../domain/model';
 import { purgeDay, retentionState } from '../domain/privacy';
 import { parisDay } from '../domain/time';
 import { longDay } from '../ui/privacy';
+import { Modal } from '../ui/components';
+import { Calendar, ChevronRight, MapPin, Plus, Users } from 'lucide-react';
 
 const dayLabel = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -120,6 +122,7 @@ export function Events() {
   const [orgName, setOrgName] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     setEvents(null);
@@ -181,7 +184,7 @@ export function Events() {
             <h1 className="page-title">Événements</h1>
             {org && <p className="page-sub">{org.orgName}</p>}
           </div>
-          <div className="row">
+          <div className="row" style={{ alignItems: 'flex-end' }}>
             {memberships.length > 1 && (
               <div className="field">
                 <label htmlFor="org-select">Organisation</label>
@@ -189,6 +192,9 @@ export function Events() {
                   {memberships.map((m) => <option key={m.orgId} value={m.orgId}>{m.orgName} ({ROLE_LABELS[m.role].toLowerCase()})</option>)}
                 </select>
               </div>
+            )}
+            {can(org?.role, 'event.create') && (
+              <button className="btn" onClick={() => setCreating(true)}><Plus size={18} aria-hidden="true" />Nouvel événement</button>
             )}
           </div>
         </div>
@@ -211,30 +217,40 @@ export function Events() {
         {!org ? <p className="muted">Vous n'êtes membre d'aucune organisation. Rejoignez un événement avec son code, ou créez votre organisation ci-dessous.</p>
           : events === null ? <p role="status">Chargement…</p>
             : events.length === 0
-              ? <p className="muted">Aucun événement pour le moment.{can(org.role, 'event.create') && ' Créez le premier ci-dessous.'}</p>
+              ? <div className="card empty"><Calendar size={28} aria-hidden="true" /><p>Aucun événement pour le moment.{can(org.role, 'event.create') && ' Créez le premier avec « Nouvel événement ».'}</p></div>
               : (
-                <ul className="grid" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                  {events.map((ev) => (
-                    <li key={ev.id} className="card stack" style={{ gap: 6 }}>
-                      <h2 style={{ fontSize: 18, margin: 0 }}><a href={href('e', ev.id, can(org.role, 'event.edit') ? 'direct' : 'scan')}>{ev.name}</a></h2>
-                      <p className="muted">
-                        {ev.startDate === ev.endDate ? dayLabel(ev.startDate) : `Du ${dayLabel(ev.startDate)} au ${dayLabel(ev.endDate)}`}
-                        {ev.venue && <><br />{ev.venue}</>}
-                      </p>
-                      <p className="small">Jauge : {ev.capacity.toLocaleString('fr-FR')} personnes</p>
-                      {ev.purgedAt
-                        ? <p><span className="pill pill-muted">Données purgées · bilan conservé</span></p>
-                        : retentionState(ev, today) !== 'kept' && can(org.role, 'event.edit') && (
-                          <p><span className="pill pill-warn">Effacement des données le {longDay(purgeDay(ev))}</span></p>
-                        )}
-                    </li>
-                  ))}
+                <ul className="event-grid">
+                  {events.map((ev) => {
+                    const phase = ev.endDate < today ? 'past' : ev.startDate > today ? 'future' : 'live';
+                    return (
+                      <li key={ev.id}>
+                        <a className="event-card" href={href('e', ev.id, can(org.role, 'event.edit') ? 'direct' : 'scan')}>
+                          <span className="row-between" style={{ flexWrap: 'nowrap' }}>
+                            <span className={`pill ${phase === 'live' ? 'pill-ok' : phase === 'future' ? 'pill-info' : 'pill-muted'}`}>
+                              {phase === 'live' ? 'En cours' : phase === 'future' ? 'À venir' : 'Terminé'}
+                            </span>
+                            <ChevronRight size={18} aria-hidden="true" className="event-card-arrow" />
+                          </span>
+                          <span className="event-card-name">{ev.name}</span>
+                          <span className="event-card-meta">
+                            <span><Calendar size={15} aria-hidden="true" />{ev.startDate === ev.endDate ? dayLabel(ev.startDate) : `Du ${dayLabel(ev.startDate)} au ${dayLabel(ev.endDate)}`}</span>
+                            {ev.venue && <span><MapPin size={15} aria-hidden="true" />{ev.venue}</span>}
+                            <span><Users size={15} aria-hidden="true" />Jauge de {ev.capacity.toLocaleString('fr-FR')} personnes</span>
+                          </span>
+                          {ev.purgedAt
+                            ? <span className="pill pill-muted">Données purgées · bilan conservé</span>
+                            : retentionState(ev, today) !== 'kept' && can(org.role, 'event.edit') && (
+                              <span className="pill pill-warn">Effacement des données le {longDay(purgeDay(ev))}</span>
+                            )}
+                        </a>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
 
-        {can(org?.role, 'event.create') && (
-          <form className="card stack" onSubmit={create} aria-labelledby="new-event">
-            <h2 id="new-event">Nouvel événement</h2>
+        <Modal open={creating} onClose={() => { setCreating(false); setError(''); }} title="Nouvel événement">
+          <form className="stack" onSubmit={create} aria-label="Nouvel événement">
             <div className="form-grid">
               <div className="field">
                 <label htmlFor="ev-name" className="required">Nom</label>
@@ -260,7 +276,7 @@ export function Events() {
             {error && <p role="alert" className="error">{error}</p>}
             <div><button className="btn" type="submit">Créer l'événement</button></div>
           </form>
-        )}
+        </Modal>
 
         <form className="card stack" onSubmit={join} aria-labelledby="join-title">
           <h2 id="join-title" style={{ marginBottom: 0 }}>Rejoindre un événement avec un code</h2>

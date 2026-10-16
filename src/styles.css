@@ -322,3 +322,31 @@ dialog.sheet { margin: auto auto 0; width: 100%; max-width: 560px; border-radius
   .kpi { padding: 12px; }
   .big-number { font-size: 26px; }
 }
+
+/* ─── Listes ───────────────────────────────────────────────────────── */
+.filters { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) 200px 200px; padding: 16px 20px 10px; }
+.filter-search { position: relative; }
+.filter-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--ink-3); pointer-events: none; }
+.filter-search .input { padding-left: 38px; }
+.people th[scope="row"] { color: var(--ink); font-weight: 400; border-bottom: 1px solid var(--line-soft); padding: 12px; }
+.person { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.person strong { font-weight: 600; }
+.show-mobile { display: none; }
+.empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 20px; color: var(--ink-3); text-align: center; }
+@media (max-width: 760px) {
+  .filters { grid-template-columns: 1fr 1fr; padding: 14px; }
+  .filter-search { grid-column: 1 / -1; }
+  .hide-mobile { display: none; }
+  .show-mobile { display: block; }
+  .people td, .people th { padding: 10px 8px; }
+}
+
+/* ─── Accueil : cartes d'événement ─────────────────────────────────── */
+.event-grid { list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.event-card { display: flex; flex-direction: column; gap: 10px; height: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; color: var(--ink); text-decoration: none; box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s, transform .15s; }
+.event-card:hover { color: var(--ink); border-color: #c9c9c3; box-shadow: 0 6px 18px rgb(22 24 29 / 8%); transform: translateY(-1px); }
+.event-card-name { font-size: 19px; font-weight: 700; letter-spacing: -0.3px; }
+.event-card-meta { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--ink-2); }
+.event-card-meta > span { display: inline-flex; align-items: center; gap: 8px; }
+.event-card-arrow { color: var(--ink-3); }
+.event-card .pill { align-self: flex-start; }

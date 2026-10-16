@@ -5,6 +5,8 @@ import type { EventSnapshot, NewParticipant } from '../data/store';
 import { fullName, type Participant } from '../domain/model';
 import { previewImport, type ImportPreview } from '../domain/csvImport';
 import { download, fileSlug, Modal, QrImage, TypeBadge } from '../ui/components';
+import { ActionMenu } from '../ui/Menu';
+import { Download, Pencil, QrCode, Search, Trash, Upload, UserPlus, Users } from 'lucide-react';
 import { FieldInput, type AnswerDraft } from '../ui/fields';
 import { fieldsFor } from '../domain/fields';
 
@@ -62,13 +64,22 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
     catch (err) { notify(errorMessage(err), 'danger'); }
   };
 
+  const STATUS_PILL = { pending: 'pill-warn', never: 'pill-muted', inside: 'pill-ok', left: 'pill-info' } as const;
+  const counts = {
+    inside: participants.filter((p) => p.inside).length,
+    came: participants.filter((p) => p.entryCount > 0).length,
+  };
+
   return (
     <div className="stack">
-      <div className="row-between">
-        <h2 style={{ fontSize: 20 }}>Participants <span className="muted">({participants.length})</span></h2>
+      <div className="page-head">
+        <div className="stack" style={{ gap: 2 }}>
+          <h2 className="page-title">Participants</h2>
+          <p className="page-sub">{participants.length} inscrits · {counts.came} venus · {counts.inside} dans la salle</p>
+        </div>
         <div className="row">
-          <button className="btn" onClick={() => setEditing('new')}>Ajouter un participant</button>
-          <button className="btn btn-secondary" onClick={() => setShowImport((v) => !v)} aria-expanded={showImport}>Importer une liste</button>
+          <button className="btn btn-secondary" onClick={() => setShowImport((v) => !v)} aria-expanded={showImport}><Upload size={18} aria-hidden="true" />Importer</button>
+          <button className="btn" onClick={() => setEditing('new')}><UserPlus size={18} aria-hidden="true" />Ajouter</button>
         </div>
       </div>
 
@@ -81,64 +92,70 @@ export function Participants({ snapshot }: { snapshot: EventSnapshot }) {
         </p>
       )}
 
-      <div className="card">
-        <div className="form-grid" role="search">
-          <div className="field">
-            <label htmlFor="q">Rechercher</label>
-            <input id="q" type="search" className="input" placeholder="Nom, email ou société" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <div className="card" style={{ padding: 0 }}>
+        <div className="filters" role="search">
+          <div className="filter-search">
+            <Search size={18} aria-hidden="true" />
+            <label htmlFor="q" className="sr-only">Rechercher un participant</label>
+            <input id="q" type="search" className="input" placeholder="Rechercher un nom, un email, une société" value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
-          <div className="field">
-            <label htmlFor="type-filter">Type</label>
-            <select id="type-filter" className="input" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-              <option value="">Tous les types</option>
-              {event.types.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="status-filter">Statut</label>
-            <select id="status-filter" className="input" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
-              <option value="all">Tous</option>
-              {(pending > 0 || event.requireApproval) && <option value="pending">En attente de validation ({pending})</option>}
-              <option value="never">Jamais venus</option>
-              <option value="inside">Dans la salle</option>
-              <option value="left">Sortis</option>
-            </select>
-          </div>
+          <label htmlFor="type-filter" className="sr-only">Type</label>
+          <select id="type-filter" className="input" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+            <option value="">Tous les types</option>
+            {event.types.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+          <label htmlFor="status-filter" className="sr-only">Statut</label>
+          <select id="status-filter" className="input" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
+            <option value="all">Tous les statuts</option>
+            {(pending > 0 || event.requireApproval) && <option value="pending">En attente de validation ({pending})</option>}
+            <option value="never">Jamais venus</option>
+            <option value="inside">Dans la salle</option>
+            <option value="left">Sortis</option>
+          </select>
         </div>
-      </div>
-
-      <div className="card">
-        <p className="muted" role="status" style={{ marginBottom: 8 }}>
+        <p className="small" role="status" style={{ padding: '0 20px 8px' }}>
           {filtered.length} participant{filtered.length > 1 ? 's' : ''}
           {filtered.length > SHOWN && ` — ${SHOWN} premiers affichés, affinez la recherche`}
         </p>
-        {filtered.length > 0 && (
+        {filtered.length === 0 ? (
+          <div className="empty">
+            <Users size={28} aria-hidden="true" />
+            <p>{participants.length === 0 ? 'Aucun participant pour le moment. Importez une liste ou ouvrez les inscriptions.' : 'Aucun participant ne correspond à ces filtres.'}</p>
+          </div>
+        ) : (
           <div className="table-wrap">
-            <table>
+            <table className="people">
               <caption className="sr-only">Liste des participants</caption>
               <thead>
-                <tr><th scope="col">Nom</th><th scope="col">Type</th><th scope="col">Société</th><th scope="col">Email</th><th scope="col">Statut</th><th scope="col"><span className="sr-only">Actions</span></th></tr>
+                <tr><th scope="col">Participant</th><th scope="col" className="hide-mobile">Type</th><th scope="col" className="hide-mobile">Société</th><th scope="col">Statut</th><th scope="col"><span className="sr-only">Actions</span></th></tr>
               </thead>
               <tbody>
                 {filtered.slice(0, SHOWN).map((p) => (
                   <tr key={p.id}>
-                    <th scope="row" style={{ color: 'var(--ink)', fontWeight: 600, borderBottom: '1px solid var(--line-soft)' }}>{fullName(p)}</th>
-                    <td><TypeBadge type={typeById.get(p.typeId)} /></td>
-                    <td>{p.company}</td>
-                    <td>{p.email}</td>
+                    <th scope="row">
+                      <span className="person">
+                        <strong>{fullName(p)}</strong>
+                        <span className="small">{p.email || '—'}</span>
+                        {p.company && <span className="small show-mobile">{p.company}</span>}
+                        <span className="show-mobile" style={{ marginTop: 4 }}><TypeBadge type={typeById.get(p.typeId)} /></span>
+                      </span>
+                    </th>
+                    <td className="hide-mobile"><TypeBadge type={typeById.get(p.typeId)} /></td>
+                    <td className="hide-mobile">{p.company}</td>
                     <td>
-                      <span className={`pill ${p.inside ? 'pill-ok' : 'pill-muted'}`}>{STATUS_LABEL[statusOf(p)]}</span>
-                      {p.entryCount > 1 && <span className="small"> · {p.entryCount} entrées</span>}
+                      <span className={`pill ${STATUS_PILL[statusOf(p)]}`}>{STATUS_LABEL[statusOf(p)]}</span>
+                      {p.entryCount > 1 && <span className="small" style={{ display: 'block', marginTop: 2 }}>{p.entryCount} entrées</span>}
                     </td>
                     <td>
-                      <div className="row" style={{ flexWrap: 'nowrap' }}>
+                      <div className="row" style={{ flexWrap: 'nowrap', justifyContent: 'flex-end' }}>
                         {p.status === 'pending'
                           ? <button className="btn btn-small" onClick={() => void accept(p)} aria-label={`Accepter l'inscription de ${fullName(p)}`}>Accepter</button>
-                          : <button className="btn btn-secondary btn-small" onClick={() => setQrFor(p)} aria-label={`QR code de ${fullName(p)}`}>QR</button>}
-                        <button className="btn btn-secondary btn-small" onClick={() => setEditing(p)} aria-label={`Modifier ${fullName(p)}`}>Modifier</button>
-                        <button className="btn btn-secondary btn-small" onClick={() => void exportOne(p)} aria-label={`Exporter les données de ${fullName(p)}`}
-                          title="Export des données de la personne, à sa demande">Ses données</button>
-                        <button className="btn btn-danger btn-small" onClick={() => remove(p)} aria-label={`Supprimer ${fullName(p)}`}>Supprimer</button>
+                          : <button className="btn btn-secondary btn-small icon-btn" onClick={() => setQrFor(p)} aria-label={`QR code de ${fullName(p)}`}><QrCode size={18} aria-hidden="true" /></button>}
+                        <ActionMenu label={`Actions pour ${fullName(p)}`} actions={[
+                          { label: 'Modifier', icon: <Pencil size={16} aria-hidden="true" />, onSelect: () => setEditing(p) },
+                          { label: 'Exporter ses données', icon: <Download size={16} aria-hidden="true" />, onSelect: () => void exportOne(p) },
+                          { label: 'Supprimer', icon: <Trash size={16} aria-hidden="true" />, onSelect: () => void remove(p), danger: true },
+                        ]} />
                       </div>
                     </td>
                   </tr>
