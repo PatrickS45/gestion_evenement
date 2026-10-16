@@ -1,0 +1,37 @@
+# Version de démonstration publiée sur Netlify : application seule, données dans le navigateur
+# (sans VITE_POCKETBASE_URL). La version avec serveur est servie par PocketBase (voir README).
+
+[build]
+  command = "npx vite build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Mêmes en-têtes de sécurité que sur le serveur (NF-21)
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+    Permissions-Policy = "camera=(self), microphone=(), geolocation=(), payment=(), usb=()"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+
+# Le service worker et la liste des fichiers sont relus à chaque visite : une mise à jour arrive aussitôt
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/asset-manifest.json"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+# Fichiers à empreinte : jamais modifiés, gardés un an
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
