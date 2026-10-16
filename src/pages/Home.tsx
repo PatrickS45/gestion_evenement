@@ -9,7 +9,8 @@ import { purgeDay, retentionState } from '../domain/privacy';
 import { parisDay } from '../domain/time';
 import { longDay } from '../ui/privacy';
 import { Modal } from '../ui/components';
-import { Calendar, ChevronRight, MapPin, Plus, Sparkles, Users } from 'lucide-react';
+import { Calendar, ChevronRight, Compass, MapPin, Plus, Sparkles, Users } from 'lucide-react';
+import { tourRequested, useTour } from '../ui/Tour';
 
 const dayLabel = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -17,7 +18,8 @@ const dayLabel = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString('fr
 export function SignIn() {
   const store = useStore();
   const { setSession } = useSession();
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  // Arrivée par le lien de visite guidée : on propose directement de créer un compte
+  const [mode, setMode] = useState<'signin' | 'signup'>(() => (tourRequested() ? 'signup' : 'signin'));
   const [form, setForm] = useState({ name: '', email: '', password: '', organization: '', code: '' });
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState('');
@@ -53,6 +55,9 @@ export function SignIn() {
         <p style={{ fontWeight: 800, color: 'var(--brand)' }}>Event Control</p>
         <h1 id="signin-title" style={{ fontSize: 26 }}>{mode === 'signin' ? 'Connexion' : 'Créer un compte'}</h1>
         {!import.meta.env.VITE_POCKETBASE_URL && <p className="muted">Version de démonstration : les données restent sur cet appareil.</p>}
+        {tourRequested() && mode === 'signup' && (
+          <p className="notice notice-info">Créez un compte de démonstration pour lancer la visite guidée : un nom, un email et un mot de passe de votre choix suffisent. Aucune donnée n'est transmise.</p>
+        )}
         {mode === 'signup' && (
           <div className="field">
             <label htmlFor="su-name" className="required">Votre nom</label>
@@ -123,6 +128,7 @@ export function Events() {
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const tour = useTour();
 
   useEffect(() => {
     setEvents(null);
@@ -203,11 +209,14 @@ export function Events() {
                 </select>
               </div>
             )}
+            {tour.available && can(org?.role, 'event.create') && (
+              <button className="btn" onClick={() => void tour.start()}><Compass size={18} aria-hidden="true" />Visite guidée</button>
+            )}
             {can(org?.role, 'event.create') && store.seedDemo && (
               <button className="btn btn-secondary" onClick={() => void loadDemo()}><Sparkles size={18} aria-hidden="true" />Charger une démonstration</button>
             )}
             {can(org?.role, 'event.create') && (
-              <button className="btn" onClick={() => setCreating(true)}><Plus size={18} aria-hidden="true" />Nouvel événement</button>
+              <button className={store.seedDemo ? 'btn btn-secondary' : 'btn'} onClick={() => setCreating(true)}><Plus size={18} aria-hidden="true" />Nouvel événement</button>
             )}
           </div>
         </div>

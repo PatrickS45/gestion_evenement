@@ -45,6 +45,13 @@ describe('buildDemo', () => {
     expect(demo.refusals.length).toBeGreaterThan(0);
   });
 
+  it('donne les mêmes participants et QR codes sur tous les appareils, à toute heure', () => {
+    const later = buildDemo('autre', NOW + 5 * 3600_000);
+    expect(later.participants.map((p) => [p.firstName, p.lastName, p.company, p.token]))
+      .toEqual(demo.participants.map((p) => [p.firstName, p.lastName, p.company, p.token]));
+    for (const p of demo.participants) expect(p.token).toMatch(/^[0-9a-f]{40}$/);
+  });
+
   it('est reproductible', () => {
     const again = buildDemo('evt', NOW);
     expect(again.passages.length).toBe(demo.passages.length);

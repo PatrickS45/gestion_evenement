@@ -1,12 +1,13 @@
 // Barre d'application : logo, sections (en haut sur ordinateur, en bas sur téléphone),
 // état du poste et menu de l'utilisateur.
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Bell, Check, LogOut, RefreshCw, ScanLine, ShieldCheck, Users, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
-import { errorMessage, useNotify, useSession, useStation, useStationStatus } from '../app/context';
+import { Bell, Check, Compass, Info, LogOut, RefreshCw, ScanLine, ShieldCheck, Users, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
+import { errorMessage, useNotify, useSession, useStation, useStationStatus, useStore } from '../app/context';
 import { href, navigate } from '../app/router';
 import { can, ROLE_LABELS, type Role } from '../domain/access';
 import { parisTime } from '../domain/time';
 import { useDismiss } from './Menu';
+import { useTour } from './Tour';
 
 export interface NavItem {
   id: string;
@@ -27,6 +28,7 @@ function UserMenu({ role }: { role?: Role | undefined }) {
   const { session, org, stationId, signOut } = useSession();
   const notify = useNotify();
   const ref = useRef<HTMLDetailsElement>(null);
+  const tour = useTour();
   const [permission, setPermission] = useState(() => (notificationsSupported() ? Notification.permission : 'denied'));
   useDismiss(ref);
   if (!session) return null;
@@ -50,6 +52,11 @@ function UserMenu({ role }: { role?: Role | undefined }) {
         )}
         {permission === 'granted' && (
           <span className="menu-item" style={{ cursor: 'default' }}><Check size={18} aria-hidden="true" />Alertes de jauge activées</span>
+        )}
+        {tour.available && (
+          <button type="button" className="menu-item" onClick={() => { if (ref.current) ref.current.open = false; void tour.start(); }}>
+            <Compass size={18} aria-hidden="true" />Visite guidée
+          </button>
         )}
         {can(org?.role, 'members.manage') && <a className="menu-item" href={href('membres')}><Users size={18} aria-hidden="true" />Membres de l'organisation</a>}
         {can(org?.role, 'stats.export') && <a className="menu-item" href={href('donnees')}><ShieldCheck size={18} aria-hidden="true" />Données personnelles</a>}
@@ -118,6 +125,23 @@ function StationPill({ eventId }: { eventId?: string | undefined }) {
   );
 }
 
+/** Version sans serveur : rappel permanent de ce que la démonstration partage (ou non) entre appareils. */
+function DemoBanner() {
+  const store = useStore();
+  if (!store.seedDemo) return null;
+  return (
+    <details className="demo-banner no-print">
+      <summary><Info size={16} aria-hidden="true" />Version de démonstration · les données restent sur cet appareil</summary>
+      <p>
+        Le salon de démonstration et ses QR codes sont identiques sur tous vos appareils : un QR code affiché sur
+        un ordinateur se scanne avec un téléphone. En revanche, ce que vous ajoutez ou enregistrez (inscrits,
+        passages, réglages) reste sur l'appareil où vous l'avez fait : un collègue ne le voit pas, et l'écran Direct
+        ne compte que les scans de cet appareil. Avec le serveur, tous les postes sont synchronisés en temps réel.
+      </p>
+    </details>
+  );
+}
+
 export function AppHeader({ title, nav = [], current, role, eventId, actions }: {
   title?: string | undefined;
   nav?: NavItem[];
@@ -156,6 +180,7 @@ export function AppHeader({ title, nav = [], current, role, eventId, actions }: 
           </div>
         </div>
       </header>
+      <DemoBanner />
       {nav.length > 0 && (
         <nav className="bottomnav no-print" aria-label="Sections">
           {nav.map((n) => {

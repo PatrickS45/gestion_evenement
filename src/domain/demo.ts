@@ -61,6 +61,10 @@ export interface DemoData {
  */
 export function buildDemo(eventId: string, now: number, seed = 2027): DemoData {
   const rand = seededRandom(seed);
+  // Identifiants et QR codes tirés d'une suite à part : identiques sur tous les appareils, quelle que soit
+  // l'heure de chargement. Un QR code affiché sur un ordinateur est donc reconnu par un téléphone.
+  const idRand = seededRandom(seed ^ 0x5eed);
+  const hex = (bytes: number) => Array.from({ length: bytes }, () => Math.floor(idRand() * 256).toString(16).padStart(2, '0')).join('');
   const pick = <T,>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
   const between = (a: number, b: number) => a + rand() * (b - a);
 
@@ -84,8 +88,8 @@ export function buildDemo(eventId: string, now: number, seed = 2027): DemoData {
     }
     used.add(email);
     return {
-      id: newId(), eventId, firstName: first, lastName: last, email, phone: '', company, typeId,
-      token: newToken(), tokenRevoked: false, source: 'import', status: 'accepted', answers: {}, consentAt: null, createdAt,
+      id: `demo-${hex(8)}`, eventId, firstName: first, lastName: last, email, phone: '', company, typeId,
+      token: hex(20), tokenRevoked: false, source: 'import', status: 'accepted', answers: {}, consentAt: null, createdAt,
       inside: false, entryCount: 0, firstEntryAt: null, lastMoveAt: null,
     };
   };
