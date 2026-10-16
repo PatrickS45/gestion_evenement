@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { errorMessage, useNotify, useSession, useStore } from '../app/context';
 import { href, navigate } from '../app/router';
+import { AppHeader } from '../ui/AppHeader';
 import { PASSWORD_MIN_LENGTH } from '../data/password';
 import { can, ROLE_LABELS } from '../domain/access';
 import type { EventInfo } from '../domain/model';
@@ -110,18 +111,6 @@ export function SignIn() {
   );
 }
 
-/** Utilisateur, rôle, poste et déconnexion, dans la barre du haut. */
-export function UserMeta({ role }: { role?: keyof typeof ROLE_LABELS }) {
-  const { session, stationId, signOut } = useSession();
-  const notify = useNotify();
-  return (
-    <span className="topbar-meta">
-      {session?.user.name}{role && <> ({ROLE_LABELS[role].toLowerCase()})</>} · {stationId} ·{' '}
-      <button className="btn btn-ghost btn-small" style={{ color: '#fff' }} onClick={() => { signOut().then(() => navigate(), (err) => notify(errorMessage(err), 'danger')); }}>Se déconnecter</button>
-    </span>
-  );
-}
-
 export function Events() {
   const store = useStore();
   const notify = useNotify();
@@ -185,15 +174,13 @@ export function Events() {
 
   return (
     <>
-      <header className="topbar on-dark">
-        <div className="topbar-inner">
-          <span className="brand">Event Control</span>
-          <UserMeta role={org?.role} />
-        </div>
-      </header>
+      <AppHeader title={org?.orgName} role={org?.role} />
       <main className="page stack">
-        <div className="row-between" style={{ alignItems: 'flex-end' }}>
-          <h1 style={{ fontSize: 24 }}>Événements{org && <> – {org.orgName}</>}</h1>
+        <div className="page-head">
+          <div className="stack" style={{ gap: 2 }}>
+            <h1 className="page-title">Événements</h1>
+            {org && <p className="page-sub">{org.orgName}</p>}
+          </div>
           <div className="row">
             {memberships.length > 1 && (
               <div className="field">
@@ -203,8 +190,6 @@ export function Events() {
                 </select>
               </div>
             )}
-            {can(org?.role, 'stats.export') && <a className="btn btn-secondary" href={href('donnees')}>Données personnelles</a>}
-            {can(org?.role, 'members.manage') && <a className="btn btn-secondary" href={href('membres')}>Membres</a>}
           </div>
         </div>
 

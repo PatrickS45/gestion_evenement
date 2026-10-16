@@ -61,7 +61,7 @@ export function QrImage({ text, size = 240, label }: { text: string; size?: numb
 }
 
 /** Fenêtre modale native (gestion du focus et de la touche Échap par le navigateur). */
-export function Modal({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
+export function Modal({ open, onClose, title, children, className }: { open: boolean; onClose: () => void; title: string; children: ReactNode; className?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current;
@@ -70,7 +70,7 @@ export function Modal({ open, onClose, title, children }: { open: boolean; onClo
     if (!open && d.open) d.close();
   }, [open]);
   return (
-    <dialog ref={ref} onClose={onClose} aria-labelledby="modal-title">
+    <dialog ref={ref} onClose={onClose} aria-labelledby="modal-title" className={className}>
       {open && (
         <div className="dialog-body">
           <div className="row-between">
@@ -89,7 +89,17 @@ export function ColumnChart({ values, labels, highlight, summary, format = Strin
   values: number[]; labels: string[]; highlight?: number; summary: string; format?: (v: number) => string; height?: number;
 }) {
   const [hover, setHover] = useState<number | null>(null);
-  const W = 640, M = { top: 18, right: 8, bottom: 26, left: 36 };
+  // Dessiné à la largeur réelle : les libellés gardent leur taille sur téléphone
+  const box = useRef<HTMLDivElement>(null);
+  const [W, setW] = useState(640);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([entry]) => { if (entry) setW(Math.max(280, Math.round(entry.contentRect.width))); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const M = { top: 18, right: 8, bottom: 26, left: 36 };
   const plotW = W - M.left - M.right, plotH = height - M.top - M.bottom;
   const rawMax = Math.max(1, ...values);
   const step = rawMax <= 4 ? 1 : 10 ** Math.floor(Math.log10(rawMax / 2));
@@ -97,13 +107,13 @@ export function ColumnChart({ values, labels, highlight, summary, format = Strin
   const slot = plotW / Math.max(1, values.length);
   const bar = Math.max(2, Math.min(22, slot - 2));
   const y = (v: number) => M.top + plotH - (v / max) * plotH;
-  const every = Math.max(1, Math.ceil(values.length / 8));
+  const every = Math.max(1, Math.ceil(values.length / Math.max(3, Math.floor(W / 80))));
   return (
-    <div style={{ position: 'relative' }}>
+    <div ref={box} style={{ position: 'relative' }}>
       <svg viewBox={`0 0 ${W} ${height}`} width="100%" role="img" aria-label={summary} onMouseLeave={() => setHover(null)} style={{ display: 'block', overflow: 'visible' }}>
         {[0, max / 2, max].map((t) => (
           <g key={t} aria-hidden="true">
-            <line x1={M.left} x2={W - M.right} y1={y(t)} y2={y(t)} stroke="#eceef2" />
+            <line x1={M.left} x2={W - M.right} y1={y(t)} y2={y(t)} stroke="#efefeb" />
             <text x={M.left - 6} y={y(t)} dy="0.32em" textAnchor="end" fontSize="11" fill="#4a4f5c">{format(t)}</text>
           </g>
         ))}
@@ -115,7 +125,7 @@ export function ColumnChart({ values, labels, highlight, summary, format = Strin
             <g key={i} aria-hidden="true">
               {h > 0 && (
                 <path d={`M${x},${y(0)}V${y(v) + r}Q${x},${y(v)} ${x + r},${y(v)}H${x + bar - r}Q${x + bar},${y(v)} ${x + bar},${y(v) + r}V${y(0)}Z`}
-                  fill="#2a78d6" opacity={hover === null || hover === i ? 1 : 0.45} />
+                  fill={i === highlight ? '#16181d' : '#8a90a0'} opacity={hover === null || hover === i ? 1 : 0.5} />
               )}
               {i === highlight && h > 0 && <text x={x + bar / 2} y={y(v) - 6} textAnchor="middle" fontSize="11" fontWeight="700" fill="#1c1d22">{format(v)}</text>}
               {i % every === 0 && <text x={M.left + i * slot + slot / 2} y={height - 6} textAnchor="middle" fontSize="11" fill="#4a4f5c">{labels[i]}</text>}

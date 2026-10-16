@@ -1,22 +1,23 @@
 import { Suspense, useEffect } from 'react';
+import { Activity, ChartColumn, ScanLine, Settings, Users, type LucideIcon } from 'lucide-react';
 import { useEventSnapshot } from '../app/context';
 import { href } from '../app/router';
 import { can, type Action } from '../domain/access';
-import { UserMeta } from './Home';
 import { Scan } from './Scan';
 import { Live } from './Live';
 import { LazyExports, LazyParticipants, LazySettings } from '../app/lazy';
 import { StationBar } from '../ui/StationBar';
 import { RetentionBanner } from '../ui/privacy';
 import { GaugeAlerts } from '../ui/GaugeAlerts';
+import { AppHeader } from '../ui/AppHeader';
 
 /** Sections et droit requis pour les voir : l'agent d'accueil n'a accès qu'au direct et au scan. */
-const SECTIONS: readonly { id: string; label: string; requires: Action }[] = [
-  { id: 'direct', label: 'Direct', requires: 'scan' },
-  { id: 'scan', label: 'Scan', requires: 'scan' },
-  { id: 'participants', label: 'Participants', requires: 'participants.manage' },
-  { id: 'exports', label: 'Statistiques et exports', requires: 'stats.export' },
-  { id: 'parametres', label: 'Paramètres', requires: 'event.edit' },
+const SECTIONS: readonly { id: string; label: string; requires: Action; icon: LucideIcon }[] = [
+  { id: 'direct', label: 'Direct', requires: 'scan', icon: Activity },
+  { id: 'scan', label: 'Scan', requires: 'scan', icon: ScanLine },
+  { id: 'participants', label: 'Participants', requires: 'participants.manage', icon: Users },
+  { id: 'exports', label: 'Statistiques', requires: 'stats.export', icon: ChartColumn },
+  { id: 'parametres', label: 'Paramètres', requires: 'event.edit', icon: Settings },
 ];
 
 export function EventShell({ eventId, section }: { eventId: string; section: string }) {
@@ -30,36 +31,24 @@ export function EventShell({ eventId, section }: { eventId: string; section: str
 
   if (snapshot === undefined) return <main className="page"><p role="status">Chargement…</p></main>;
   if (snapshot === null) return (
-    <main className="page stack">
-      <h1 style={{ fontSize: 22 }}>Événement introuvable</h1>
-      <p><a href={href()}>Retour à la liste des événements</a></p>
-    </main>
+    <>
+      <AppHeader />
+      <main className="page stack">
+        <h1 className="page-title">Événement introuvable</h1>
+        <p><a href={href()}>Retour à la liste des événements</a></p>
+      </main>
+    </>
   );
 
   const { event } = snapshot;
+  const nav = sections.map((s) => ({ id: s.id, label: s.label, icon: s.icon, href: href('e', eventId, s.id) }));
   return (
     <>
-      <header className="topbar on-dark no-print">
-        <div className="topbar-inner">
-          <div>
-            <a className="brand" href={href()}>Event Control</a>
-            <span aria-hidden="true"> › </span>
-            <span style={{ fontWeight: 700 }}>{event.name}</span>
-          </div>
-          <UserMeta role={snapshot.role} />
-        </div>
-      </header>
-      <nav className="tabs no-print" aria-label="Sections de l'événement">
-        <div className="tabs-inner">
-          {sections.map((s) => (
-            <a key={s.id} className="tab" href={href('e', eventId, s.id)} aria-current={s.id === current.id ? 'page' : undefined}>{s.label}</a>
-          ))}
-        </div>
-      </nav>
+      <AppHeader title={event.name} nav={nav} current={current.id} role={snapshot.role} eventId={eventId} />
       <StationBar eventId={eventId} />
       <RetentionBanner event={event} role={snapshot.role} />
       {!event.purgedAt && <GaugeAlerts key={event.id} event={event} present={snapshot.participants.filter((p) => p.inside).length} />}
-      <main className="page">
+      <main className={current.id === 'scan' ? 'page page-scan' : 'page'}>
         <h1 className="sr-only">{current.label} – {event.name}</h1>
         {current.id === 'direct' && <Live snapshot={snapshot} />}
         {current.id === 'scan' && <Scan snapshot={snapshot} />}

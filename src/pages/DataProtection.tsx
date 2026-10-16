@@ -6,7 +6,7 @@ import { AUDIT_LABELS, type AuditEntry, type PrivacyPolicy } from '../domain/pri
 import type { EventReport } from '../domain/report';
 import { PrivacyFields } from '../ui/privacy';
 import { ReportView } from '../ui/ReportView';
-import { UserMeta } from './Home';
+import { AppHeader } from '../ui/AppHeader';
 
 const dateTime = (iso: string) => new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
 const REASONS: Record<EventReport['reason'], string> = { purge: 'purge des données', deletion: 'suppression de l\'événement' };
@@ -41,18 +41,12 @@ export function DataProtection() {
 
   return (
     <>
-      <header className="topbar on-dark">
-        <div className="topbar-inner">
-          <div>
-            <a className="brand" href={href()}>Event Control</a>
-            <span aria-hidden="true"> › </span>
-            <span style={{ fontWeight: 700 }}>Données personnelles</span>
-          </div>
-          <UserMeta role={org?.role} />
-        </div>
-      </header>
+      <AppHeader title={org?.orgName} role={org?.role} />
       <main className="page stack">
-        <h1 style={{ fontSize: 24 }}>Données personnelles{org && <> – {org.orgName}</>}</h1>
+        <div className="stack" style={{ gap: 2 }}>
+          <p className="page-sub"><a href={href()}>Événements</a> <span aria-hidden="true">›</span></p>
+          <h1 className="page-title">Données personnelles</h1>
+        </div>
         {!allowed ? <p className="notice notice-info">Réservé aux propriétaires et administrateurs de l'organisation.</p> : <>
           <form className="card stack" onSubmit={save} aria-labelledby="default-title" noValidate>
             <h2 id="default-title" style={{ marginBottom: 0 }}>Politique par défaut</h2>

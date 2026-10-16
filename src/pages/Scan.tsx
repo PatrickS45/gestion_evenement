@@ -1,27 +1,30 @@
-import { useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { ArrowLeft, ArrowRight, Camera, Check, Keyboard, Search, TriangleAlert, Volume2, VolumeX, X } from 'lucide-react';
 import { errorMessage, useNotify, useSession, useStationStatus, useStore } from '../app/context';
 import type { EventSnapshot, ScanResult } from '../data/store';
-import { fullName, type Direction, type ScanMethod } from '../domain/model';
+import { fullName, type Direction, type Participant, type ScanMethod } from '../domain/model';
 import { decisionMessage } from '../domain/scan';
-import { gaugeLevel } from '../domain/gauge';
+import { gaugeLevel, GAUGE_LEVELS } from '../domain/gauge';
 import { parisTime } from '../domain/time';
-import { Suspense } from 'react';
 import { LazyCameraScanner } from '../app/lazy';
-import { GaugeBar, Modal, TypeBadge, TypeBanner } from '../ui/components';
+import { GaugeBar, Modal, TypeBadge } from '../ui/components';
+import { signal } from '../ui/feedback';
+import { flashDuration, flashText } from '../ui/scanFlash';
 
 const MODE_KEY = 'event-control:station-mode';
+const CAMERA_KEY = 'event-control:camera';
+const SOUND_KEY = 'event-control:sound';
 /** Une relecture du même QR code par la caméra dans ce délai est ignorée (F-55). */
 const SAME_CODE_IGNORE_MS = 10_000;
 
-const TONES = {
-  accepted: { css: 'notice-ok', icon: '✓' },
-  refused: { css: 'notice-danger', icon: '✕' },
-  warning: { css: 'notice-warn', icon: '!' },
-} as const;
-
-function readMode(): Direction {
-  try { return localStorage.getItem(MODE_KEY) === 'out' ? 'out' : 'in'; } catch { return 'in'; }
+function readPref(key: string, fallback: string): string {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
 }
+function writePref(key: string, value: string) {
+  try { localStorage.setItem(key, value); } catch { /* préférence non mémorisée */ }
+}
+
+const FLASH_ICON = { accepted: Check, refused: X, warning: TriangleAlert } as const;
 
 export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
   const store = useStore();
@@ -29,10 +32,13 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
   const { stationId } = useSession();
   const offline = useStationStatus()?.online === false;
   const { event, participants } = snapshot;
-  const [mode, setModeState] = useState<Direction>(readMode);
-  const [camera, setCamera] = useState(false);
-  const [result, setResult] = useState<ScanResult | null>(null);
+  const [mode, setModeState] = useState<Direction>(() => (readPref(MODE_KEY, 'in') === 'out' ? 'out' : 'in'));
+  const [camera, setCamera] = useState(() => readPref(CAMERA_KEY, 'off') === 'on');
+  const [sound, setSound] = useState(() => readPref(SOUND_KEY, 'on') === 'on');
+  const [flash, setFlash] = useState<ScanResult | null>(null);
+  const [last, setLast] = useState<ScanResult | null>(null);
   const [overCapacity, setOverCapacity] = useState<number | null>(null);
+  const [sheet, setSheet] = useState<'search' | 'code' | null>(null);
   const [code, setCode] = useState('');
   const [query, setQuery] = useState('');
   const lastCamera = useRef({ code: '', at: 0 });
@@ -43,11 +49,16 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
   const level = gaugeLevel(present, event.capacity, event.thresholds);
   const typeById = useMemo(() => new Map(event.types.map((t) => [t.id, t])), [event.types]);
 
-  const setMode = (m: Direction) => {
-    setModeState(m);
-    setResult(null);
-    try { localStorage.setItem(MODE_KEY, m); } catch { /* préférence non mémorisée */ }
-  };
+  // Le résultat plein écran s'efface seul ; un nouveau scan le remplace
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), flashDuration(flashText(flash.decision, parisTime).tone));
+    return () => clearTimeout(t);
+  }, [flash]);
+
+  const setMode = (m: Direction) => { setModeState(m); setFlash(null); writePref(MODE_KEY, m); };
+  const toggleCamera = (on: boolean) => { setCamera(on); writePref(CAMERA_KEY, on ? 'on' : 'off'); };
+  const toggleSound = () => { setSound(!sound); writePref(SOUND_KEY, sound ? 'off' : 'on'); };
 
   const handle = async (token: string, method: ScanMethod) => {
     if (!token.trim() || busy.current) return;
@@ -59,8 +70,9 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
     busy.current = true;
     try {
       const r = await store.scan(event.id, token, mode, method, stationId);
-      setResult(r);
-      navigator.vibrate?.(r.decision.result === 'accepted' ? 80 : [60, 60, 60]);
+      setFlash(r);
+      setLast(r);
+      signal(flashText(r.decision, parisTime).tone, sound);
       if (r.decision.result === 'accepted' && r.decision.direction === 'in' && event.capacity > 0 && present + 1 > event.capacity) {
         setOverCapacity(present + 1);
       }
@@ -84,6 +96,7 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
     const method: ScanMethod = code.length >= 20 && elapsed < code.length * 25 ? 'scanner' : 'manual';
     void handle(code.trim(), method);
     setCode('');
+    setSheet(null);
   };
 
   const matches = useMemo(() => {
@@ -92,97 +105,118 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
     return participants.filter((p) => p.status !== 'pending' && `${p.firstName} ${p.lastName} ${p.company}`.toLowerCase().includes(q)).slice(0, 8);
   }, [participants, query]);
 
-  const resultType = result?.participant ? typeById.get(result.participant.typeId) : undefined;
-  const tone = result ? TONES[result.decision.result] : null;
+  const pick = (p: Participant) => { void handle(p.token, 'search'); setQuery(''); setSheet(null); };
   const verb = mode === 'in' ? "l'entrée" : 'la sortie';
+  const announce = last ? decisionMessage(last.decision, last.participant ? fullName(last.participant) : '', parisTime) : '';
 
   return (
-    <div className="stack" style={{ maxWidth: 620, margin: '0 auto' }}>
-      <div role="group" aria-label="Mode de ce poste" className="grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
-        {([['in', 'Entrée', '→', 'var(--ok)'], ['out', 'Sortie', '←', 'var(--warn)']] as const).map(([m, label, arrow, color]) => (
-          <button key={m} type="button" className="btn btn-big" aria-pressed={mode === m} onClick={() => setMode(m)}
-            style={mode === m ? { background: color, borderColor: color } : { background: '#fff', color: 'var(--ink)', borderColor: '#8b91a0' }}>
-            <span aria-hidden="true">{arrow}</span> {label}
+    <div className="scan">
+      {/* Annonce du résultat aux lecteurs d'écran (zone toujours présente) */}
+      <p className="sr-only" role="status" aria-live="assertive" aria-atomic="true">{announce}</p>
+
+      <section className="scan-count" aria-label="Présence dans la salle">
+        <div className="row-between" style={{ alignItems: 'baseline' }}>
+          <span className="kpi-label">Dans la salle{offline && ' (estimation hors ligne)'}</span>
+          <span><strong className="scan-count-value">{present}</strong> <span className="muted">/ {event.capacity}</span></span>
+        </div>
+        <GaugeBar present={present} capacity={event.capacity} level={level} height={6} showLabel={false} />
+        {level !== 'normal' && (
+          <p style={{ color: GAUGE_LEVELS[level].color, fontWeight: 700, fontSize: 14 }}>
+            <span aria-hidden="true">{GAUGE_LEVELS[level].icon} </span>{GAUGE_LEVELS[level].label}
+          </p>
+        )}
+      </section>
+
+      <div className="scan-mode-row">
+        <div role="group" aria-label="Mode de ce poste" className="segmented scan-mode" data-mode={mode}>
+          <button type="button" aria-pressed={mode === 'in'} onClick={() => setMode('in')}><ArrowRight size={18} aria-hidden="true" />Entrée</button>
+          <button type="button" aria-pressed={mode === 'out'} onClick={() => setMode('out')}><ArrowLeft size={18} aria-hidden="true" />Sortie</button>
+        </div>
+        <button type="button" className="btn btn-secondary icon-btn" onClick={toggleSound} aria-pressed={sound}
+          aria-label={sound ? 'Couper le son des scans' : 'Activer le son des scans'}>
+          {sound ? <Volume2 size={20} aria-hidden="true" /> : <VolumeX size={20} aria-hidden="true" />}
+        </button>
+      </div>
+
+      <div className="viewfinder">
+        {camera ? (
+          <>
+            <Suspense fallback={<p className="viewfinder-hint" role="status">Démarrage de la caméra…</p>}>
+              <LazyCameraScanner onCode={(c) => void handle(c, 'camera')} paused={overCapacity !== null || flash !== null} />
+            </Suspense>
+            <svg className="viewfinder-frame" viewBox="0 0 200 200" fill="none" stroke="#fff" strokeWidth="4" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 42V16A12 12 0 0 1 16 4h26M158 4h26a12 12 0 0 1 12 12v26M196 158v26a12 12 0 0 1-12 12h-26M42 196H16a12 12 0 0 1-12-12v-26" />
+            </svg>
+            <p className="viewfinder-hint" aria-hidden="true">Visez le QR code du badge</p>
+            <button type="button" className="viewfinder-stop" onClick={() => toggleCamera(false)} aria-label="Arrêter la caméra"><X size={20} aria-hidden="true" /></button>
+          </>
+        ) : (
+          <button type="button" className="viewfinder-start" onClick={() => toggleCamera(true)}>
+            <Camera size={34} aria-hidden="true" />
+            <span>Activer la caméra</span>
           </button>
-        ))}
-      </div>
-      <p className="muted">
-        Ce poste enregistre les <strong>{mode === 'in' ? 'entrées' : 'sorties'}</strong>.{' '}
-        {offline ? 'Les passages seront transmis aux autres postes au retour du réseau.' : 'Chaque passage apparaît aussitôt sur les autres postes.'}
-      </p>
-
-      <div className="card" style={{ padding: 14 }}>
-        <p style={{ marginBottom: 6 }}>
-          Dans la salle : <strong>{present}</strong> / {event.capacity}
-          {offline && <span className="small"> — estimation hors ligne : seuls les passages de ce poste sont à jour</span>}
-        </p>
-        <GaugeBar present={present} capacity={event.capacity} level={level} height={10} showLabel={level !== 'normal'} />
-      </div>
-
-      {/* Résultat du dernier scan, annoncé aux lecteurs d'écran */}
-      <div role="status" aria-live="assertive" aria-atomic="true">
-        {result && tone && (
-          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-            {resultType && <TypeBanner type={resultType} />}
-            <div className={`notice ${tone.css}`} style={{ borderRadius: 0, fontSize: 20 }}>
-              <span aria-hidden="true">{tone.icon} </span>
-              {decisionMessage(result.decision, result.participant ? fullName(result.participant) : '', parisTime)}
-            </div>
-            {result.participant && (
-              <p style={{ padding: '10px 16px' }}>
-                {result.participant.company && <strong>{result.participant.company} · </strong>}
-                <span className="muted">{result.participant.email}</span>
-              </p>
-            )}
-          </div>
         )}
       </div>
 
-      <section className="card stack" aria-labelledby="cam-title">
-        <h2 id="cam-title" style={{ marginBottom: 0 }}>Caméra</h2>
-        {camera
-          ? <>
-              <Suspense fallback={<p role="status">Démarrage de la caméra…</p>}>
-                <LazyCameraScanner onCode={(c) => void handle(c, 'camera')} paused={overCapacity !== null} />
-              </Suspense>
-              <button className="btn btn-secondary" onClick={() => setCamera(false)}>Arrêter la caméra</button>
-            </>
-          : <button className="btn btn-big" onClick={() => setCamera(true)}>Activer la caméra</button>}
-      </section>
+      {last && !flash && (
+        <p className="scan-last">
+          <span className="small">Dernier passage</span>
+          <span className="scan-last-text">
+            {(() => { const Icon = FLASH_ICON[flashText(last.decision, parisTime).tone]; return <Icon size={16} aria-hidden="true" />; })()}
+            {last.participant ? `${fullName(last.participant)} · ${flashText(last.decision, parisTime).title}` : flashText(last.decision, parisTime).title}
+          </span>
+        </p>
+      )}
 
-      <form className="card stack" onSubmit={submitCode} aria-labelledby="code-title">
-        <h2 id="code-title" style={{ marginBottom: 0 }}><label htmlFor="code">Douchette ou référence</label></h2>
-        <p className="small" id="code-help">Avec une douchette, scannez simplement : le code est validé automatiquement.</p>
+      <div className="scan-actions">
+        <button type="button" className="btn btn-secondary" onClick={() => setSheet('search')}><Search size={18} aria-hidden="true" />Rechercher</button>
+        <button type="button" className="btn btn-secondary mobile-only" onClick={() => setSheet('code')}><Keyboard size={18} aria-hidden="true" />Saisir un code</button>
+      </div>
+
+      {/* Sur ordinateur, champ toujours prêt pour une douchette */}
+      <form className="card desktop-only stack" style={{ gap: 10 }} onSubmit={submitCode}>
+        <label htmlFor="code" className="label">Douchette ou référence</label>
         <div className="row" style={{ flexWrap: 'nowrap' }}>
           <input id="code" className="input" autoComplete="off" spellCheck={false} aria-describedby="code-help"
-            value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={onCodeKey} style={{ fontFamily: 'ui-monospace, monospace' }} />
+            value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={onCodeKey} style={{ fontFamily: 'var(--mono)' }} />
           <button className="btn" type="submit">Valider</button>
         </div>
+        <p className="small" id="code-help">Avec une douchette, scannez simplement : le code est validé automatiquement.</p>
       </form>
 
-      <section className="card stack" aria-labelledby="search-title">
-        <h2 id="search-title" style={{ marginBottom: 0 }}><label htmlFor="search">Rechercher par nom</label></h2>
-        <input id="search" type="search" className="input" placeholder="2 lettres au moins" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <Modal open={sheet === 'code'} onClose={() => setSheet(null)} title="Saisir un code" className="sheet">
+        <form className="stack" onSubmit={submitCode}>
+          <label htmlFor="code-sheet" className="label">Référence du badge</label>
+          <input id="code-sheet" className="input" autoComplete="off" spellCheck={false} autoFocus
+            value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={onCodeKey} style={{ fontFamily: 'var(--mono)' }} />
+          <button className="btn btn-big" type="submit">Valider {verb}</button>
+        </form>
+      </Modal>
+
+      <Modal open={sheet === 'search'} onClose={() => { setSheet(null); setQuery(''); }} title="Rechercher un participant" className="sheet">
+        <label htmlFor="search" className="sr-only">Nom, prénom ou société</label>
+        <input id="search" type="search" className="input" placeholder="Nom, prénom ou société" autoFocus value={query} onChange={(e) => setQuery(e.target.value)} />
+        {query.trim().length >= 2 && matches.length === 0 && <p className="muted">Aucun participant trouvé.</p>}
         {matches.length > 0 && (
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          <ul className="search-results">
             {matches.map((p) => {
               const blocked = (mode === 'in' && p.inside) || (mode === 'out' && !p.inside);
               return (
-                <li key={p.id} className="row-between" style={{ padding: '8px 0', borderBottom: '1px solid var(--line-soft)' }}>
-                  <span>
-                    <strong>{fullName(p)}</strong> <TypeBadge type={typeById.get(p.typeId)} />
-                    {p.company && <span className="small"> · {p.company}</span>}
+                <li key={p.id}>
+                  <span className="search-who">
+                    <strong>{fullName(p)}</strong>
+                    <span className="small">{p.company || p.email}</span>
                   </span>
+                  <TypeBadge type={typeById.get(p.typeId)} />
                   {blocked
-                    ? <span className="pill pill-muted">{p.inside ? 'Déjà dans la salle' : 'Pas dans la salle'}</span>
-                    : <button className="btn btn-small" onClick={() => { void handle(p.token, 'search'); setQuery(''); }}
-                        aria-label={`Enregistrer ${verb} de ${fullName(p)}`}>{mode === 'in' ? 'Entrée' : 'Sortie'}</button>}
+                    ? <span className="pill pill-muted">{p.inside ? 'Dans la salle' : 'Pas dans la salle'}</span>
+                    : <button className="btn btn-small" onClick={() => pick(p)} aria-label={`Enregistrer ${verb} de ${fullName(p)}`}>{mode === 'in' ? 'Entrée' : 'Sortie'}</button>}
                 </li>
               );
             })}
           </ul>
         )}
-      </section>
+      </Modal>
 
       <Modal open={overCapacity !== null} onClose={() => setOverCapacity(null)} title="Jauge dépassée">
         <p className="notice notice-danger" role="alert">
@@ -191,6 +225,41 @@ export function Scan({ snapshot }: { snapshot: EventSnapshot }) {
         </p>
         <button className="btn" onClick={() => setOverCapacity(null)}>J'ai compris</button>
       </Modal>
+
+      {flash && <Flash result={flash} type={flash.participant ? typeById.get(flash.participant.typeId) : undefined} onClose={() => setFlash(null)} />}
+    </div>
+  );
+}
+
+/** Résultat plein écran : vert, rouge ou orange, lisible à un mètre (piste « Accueil »). */
+function Flash({ result, type, onClose }: { result: ScanResult; type: { label: string; color: string } | undefined; onClose: () => void }) {
+  const text = flashText(result.decision, parisTime);
+  const Icon = FLASH_ICON[text.tone];
+  // Échap ferme le résultat ; le focus reste sur le champ de la douchette
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const p = result.participant;
+  return (
+    <div className={`scan-flash scan-flash-${text.tone}`} onClick={onClose} aria-hidden="true">
+      <div className="scan-flash-body">
+        <span className="scan-flash-icon"><Icon size={44} strokeWidth={3} /></span>
+        <span className="scan-flash-title">{text.title}</span>
+        {p && <span className="scan-flash-name">{fullName(p)}</span>}
+        <span className="scan-flash-meta">
+          {type && (
+            <span className="scan-flash-type">
+              <span className="badge-dot" style={{ background: type.color }} />
+              {type.label}
+            </span>
+          )}
+          {p?.company && <span>{p.company}</span>}
+        </span>
+        <span className="scan-flash-detail">{text.detail}</span>
+      </div>
+      <span className="scan-flash-hint">Toucher pour continuer</span>
     </div>
   );
 }
